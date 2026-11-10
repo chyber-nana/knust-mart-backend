@@ -1,7 +1,7 @@
 import os
 import httpx
 
-def send_email(to: str, subject: str, body: str, html_body: str | None = None) -> None:
+def send_otp_email(to: str, code: str, user_name: str = "Student") -> None:
     key = os.environ.get("BREVO_API_KEY")
     raw_sender = os.environ.get("MAIL_FROM", "messenger@knustmart.site")
     
@@ -13,8 +13,124 @@ def send_email(to: str, subject: str, body: str, html_body: str | None = None) -
         sender_email = raw_sender.strip()
         sender_name = "KNUST Mart"
 
+    subject = "Verify Your KNUST Mart Account 🚀"
+
+    # Beautiful, responsive HTML email design matching a modern marketplace aesthetic
+    html_body = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <title>Verify Your Email</title>
+        <style>
+            body {{
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+                background-color: #f4f6f8;
+                margin: 0;
+                padding: 0;
+                -webkit-font-smoothing: antialiased;
+            }}
+            .email-wrapper {{
+                width: 100%;
+                background-color: #f4f6f8;
+                padding: 40px 0;
+            }}
+            .email-content {{
+                max-width: 600px;
+                margin: 0 auto;
+                background-color: #ffffff;
+                border-radius: 12px;
+                overflow: hidden;
+                box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+            }}
+            .email-header {{
+                background-color: #0f172a;
+                padding: 30px;
+                text-align: center;
+            }}
+            .email-header h1 {{
+                color: #ffffff;
+                margin: 0;
+                font-size: 24px;
+                font-weight: 700;
+                letter-spacing: 0.5px;
+            }}
+            .email-body {{
+                padding: 40px 30px;
+                color: #334155;
+                line-height: 1.6;
+            }}
+            .email-body h2 {{
+                color: #0f172a;
+                font-size: 20px;
+                margin-top: 0;
+            }}
+            .otp-box {{
+                background-color: #f8fafc;
+                border: 2px dashed #cbd5e1;
+                border-radius: 8px;
+                padding: 20px;
+                text-align: center;
+                margin: 30px 0;
+            }}
+            .otp-code {{
+                font-size: 36px;
+                font-weight: 800;
+                letter-spacing: 6px;
+                color: #2563eb;
+                margin: 0;
+            }}
+            .email-footer {{
+                background-color: #f8fafc;
+                padding: 20px 30px;
+                text-align: center;
+                color: #94a3b8;
+                font-size: 13px;
+                border-top: 1px solid #e2e8f0;
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="email-wrapper">
+            <div class="email-content">
+                <!-- Header with Brand Name / Optional Logo -->
+                <div class="email-header" style="background-color: #0f172a; padding: 25px; text-align: center;">
+    <img src="https://vkhgvaencdidocddyorp.supabase.co/storage/v1/object/public/knust-mart/logo.jpg" alt="KNUST Mart" style="max-height: 40px;" />
+</div>
+                    
+                
+                
+                <!-- Body Content -->
+                <div class="email-body">
+                    <h2>Hello, {user_name}! 👋</h2>
+                    <p>Welcome to <strong>KNUST Mart</strong> — your ultimate student marketplace and courier platform on campus. To secure your account and confirm your student status, please use the verification code below:</p>
+                    
+                    <!-- Prominent OTP Code Box -->
+                    <div class="otp-box">
+                        <p style="margin: 0 0 10px 0; font-size: 12px; text-transform: uppercase; letter-spacing: 1px; color: #64748b; font-weight: 600;">Your Verification Code</p>
+                        <p class="otp-code">{code}</p>
+                    </div>
+                    
+                    <p>This code will expire in <strong>10 minutes</strong>. If you didn't request this registration, you can safely ignore this email.</p>
+                    
+                    <p style="margin-top: 30px; margin-bottom: 0;">See you on campus,<br><strong>The KNUST Mart Team</strong></p>
+                </div>
+                
+                <!-- Footer -->
+                <div class="email-footer">
+                    <p>&copy; 2026 KNUST Mart. Built for KNUST students.</p>
+                    <p>This is an automated message, please do not reply directly to this email.</p>
+                </div>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+
+    text_body = f"Hello {user_name},\n\nYour KNUST Mart verification code is: {code}\n\nIt expires in 10 minutes."
+
     if not key:
-        print(f"[mail simulation] to={to} subject={subject}\n{body}")
+        print(f"[mail simulation] to={to} subject={subject}\n{text_body}")
         return
 
     response = httpx.post(
@@ -28,13 +144,12 @@ def send_email(to: str, subject: str, body: str, html_body: str | None = None) -
             "sender": {"email": sender_email, "name": sender_name},
             "to": [{"email": to}],
             "subject": subject,
-            "textContent": body,
-            **({"htmlContent": html_body} if html_body else {})
+            "textContent": text_body,
+            "htmlContent": html_body
         },
         timeout=10.0,
     )
     
-    # This will print Brevo's exact rejection reason in your Render logs
     if response.status_code >= 400:
         print(f"❌ BREVO API ERROR [{response.status_code}]: {response.text}")
         
