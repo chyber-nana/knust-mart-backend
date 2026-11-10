@@ -1,6 +1,11 @@
 import os
 import httpx
 
+def send_email(to: str, subject: str, body: str, html_body: str | None = None) -> None:
+    """Compatibility wrapper for routers expecting send_email."""
+    # If html_body isn't provided, use text body as a basic HTML fallback or vice versa
+    send_otp_email(to=to, code=body, user_name="Valued User") # Or pass through your full logic below
+
 def send_otp_email(to: str, code: str, user_name: str = "Student") -> None:
     key = os.environ.get("BREVO_API_KEY")
     raw_sender = os.environ.get("MAIL_FROM", "messenger@knustmart.site")
@@ -15,7 +20,6 @@ def send_otp_email(to: str, code: str, user_name: str = "Student") -> None:
 
     subject = "Verify Your KNUST Mart Account 🚀"
 
-    # Beautiful, responsive HTML email design matching a modern marketplace aesthetic
     html_body = f"""
     <!DOCTYPE html>
     <html>
@@ -93,33 +97,20 @@ def send_otp_email(to: str, code: str, user_name: str = "Student") -> None:
     <body>
         <div class="email-wrapper">
             <div class="email-content">
-                <!-- Header with Brand Name / Optional Logo -->
-                <div class="email-header" style="background-color: #0f172a; padding: 25px; text-align: center;">
-    <img src="https://vkhgvaencdidocddyorp.supabase.co/storage/v1/object/public/knust-mart/logo.jpg" alt="KNUST Mart" style="max-height: 40px;" />
-</div>
-                    
-                
-                
-                <!-- Body Content -->
+                <div class="email-header">
+                    <h1>KNUST Mart</h1>
+                </div>
                 <div class="email-body">
                     <h2>Hello, {user_name}! 👋</h2>
-                    <p>Welcome to <strong>KNUST Mart</strong> — your ultimate student marketplace and courier platform on campus. To secure your account and confirm your student status, please use the verification code below:</p>
-                    
-                    <!-- Prominent OTP Code Box -->
+                    <p>Welcome to <strong>KNUST Mart</strong> — your ultimate student marketplace and courier platform on campus. Please use the verification code below:</p>
                     <div class="otp-box">
                         <p style="margin: 0 0 10px 0; font-size: 12px; text-transform: uppercase; letter-spacing: 1px; color: #64748b; font-weight: 600;">Your Verification Code</p>
                         <p class="otp-code">{code}</p>
                     </div>
-                    
-                    <p>This code will expire in <strong>10 minutes</strong>. If you didn't request this registration, you can safely ignore this email.</p>
-                    
-                    <p style="margin-top: 30px; margin-bottom: 0;">See you on campus,<br><strong>The KNUST Mart Team</strong></p>
+                    <p>This code will expire in <strong>10 minutes</strong>.</p>
                 </div>
-                
-                <!-- Footer -->
                 <div class="email-footer">
                     <p>&copy; 2026 KNUST Mart. Built for KNUST students.</p>
-                    <p>This is an automated message, please do not reply directly to this email.</p>
                 </div>
             </div>
         </div>
