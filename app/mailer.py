@@ -2,15 +2,13 @@ import os
 import httpx
 
 def send_email(to: str, subject: str, body: str, html_body: str | None = None) -> None:
-    """Compatibility wrapper for routers expecting send_email."""
-    # If html_body isn't provided, use text body as a basic HTML fallback or vice versa
-    send_otp_email(to=to, code=body, user_name="Valued User") # Or pass through your full logic below
+    # Fallback compatibility wrapper
+    send_verification_email(to=to, verify_url=body, user_name="Student")
 
-def send_otp_email(to: str, code: str, user_name: str = "Student") -> None:
+def send_verification_email(to: str, verify_url: str, user_name: str = "Student") -> None:
     key = os.environ.get("BREVO_API_KEY")
     raw_sender = os.environ.get("MAIL_FROM", "messenger@knustmart.site")
     
-    # Parse sender name and email safely
     if "<" in raw_sender and ">" in raw_sender:
         sender_email = raw_sender.split("<")[1].split(">")[0].strip()
         sender_name = raw_sender.split("<")[0].strip()
@@ -18,8 +16,9 @@ def send_otp_email(to: str, code: str, user_name: str = "Student") -> None:
         sender_email = raw_sender.strip()
         sender_name = "KNUST Mart"
 
-    subject = "Verify Your KNUST Mart Account 🚀"
+    subject = "Confirm Your KNUST Mart Email 🚀"
 
+    # HTML body featuring a clean, responsive CTA button
     html_body = f"""
     <!DOCTYPE html>
     <html>
@@ -57,32 +56,23 @@ def send_otp_email(to: str, code: str, user_name: str = "Student") -> None:
                 margin: 0;
                 font-size: 24px;
                 font-weight: 700;
-                letter-spacing: 0.5px;
             }}
             .email-body {{
                 padding: 40px 30px;
                 color: #334155;
                 line-height: 1.6;
             }}
-            .email-body h2 {{
-                color: #0f172a;
-                font-size: 20px;
-                margin-top: 0;
-            }}
-            .otp-box {{
-                background-color: #f8fafc;
-                border: 2px dashed #cbd5e1;
+            .btn {{
+                display: inline-block;
+                background-color: #2563eb;
+                color: #ffffff !important;
+                text-decoration: none;
+                font-weight: 600;
+                font-size: 16px;
+                padding: 14px 28px;
                 border-radius: 8px;
-                padding: 20px;
+                margin: 30px 0 20px 0;
                 text-align: center;
-                margin: 30px 0;
-            }}
-            .otp-code {{
-                font-size: 36px;
-                font-weight: 800;
-                letter-spacing: 6px;
-                color: #2563eb;
-                margin: 0;
             }}
             .email-footer {{
                 background-color: #f8fafc;
@@ -102,12 +92,15 @@ def send_otp_email(to: str, code: str, user_name: str = "Student") -> None:
                 </div>
                 <div class="email-body">
                     <h2>Hello, {user_name}! 👋</h2>
-                    <p>Welcome to <strong>KNUST Mart</strong> — your ultimate student marketplace and courier platform on campus. Please use the verification code below:</p>
-                    <div class="otp-box">
-                        <p style="margin: 0 0 10px 0; font-size: 12px; text-transform: uppercase; letter-spacing: 1px; color: #64748b; font-weight: 600;">Your Verification Code</p>
-                        <p class="otp-code">{code}</p>
+                    <p>Welcome to <strong>KNUST Mart</strong>. Click the secure button below to confirm your student email address and activate your account:</p>
+                    
+                    <div style="text-align: center;">
+                        <a href="{verify_url}" class="btn" target="_blank">Verify My Email Address</a>
                     </div>
-                    <p>This code will expire in <strong>10 minutes</strong>.</p>
+                    
+                    <p style="font-size: 13px; color: #64748b; word-break: break-all;">If the button doesn't work, copy and paste this link into your browser:<br>{verify_url}</p>
+                    
+                    <p>This link will expire in <strong>24 hours</strong>.</p>
                 </div>
                 <div class="email-footer">
                     <p>&copy; 2026 KNUST Mart. Built for KNUST students.</p>
@@ -118,7 +111,7 @@ def send_otp_email(to: str, code: str, user_name: str = "Student") -> None:
     </html>
     """
 
-    text_body = f"Hello {user_name},\n\nYour KNUST Mart verification code is: {code}\n\nIt expires in 10 minutes."
+    text_body = f"Hello {user_name},\n\nPlease verify your email by opening this link: {verify_url}\n\nThis link expires in 24 hours."
 
     if not key:
         print(f"[mail simulation] to={to} subject={subject}\n{text_body}")
