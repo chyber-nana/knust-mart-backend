@@ -2,7 +2,7 @@ import os
 import secrets
 from html import escape
 from datetime import datetime, timedelta, timezone
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,19 +10,11 @@ from ..db import get_db
 from ..mailer import send_email
 from ..models import EmailVerification, User
 from ..notifications import add_notification
+from ..schema import UserRegisterSchema as RegisterIn
 from ..security import current_user, enforce_rate_limit, make_token, pwd
 
 router = APIRouter(prefix="/auth", tags=["auth"])
-STUDENT_DOMAINS = ("@st.knust.edu.gh", "@idl.knust.edu.gh")
 MAX_ATTEMPTS = 5
-
-class RegisterIn(BaseModel):
-    full_name: str = Field(min_length=2)
-    email: EmailStr
-    password: str = Field(min_length=8)
-    account_type: str = Field(pattern="^(student|external)$")
-    hostel_or_business_address: str | None = None
-    store_name: str | None = None
 
 class LoginIn(BaseModel):
     email: EmailStr
@@ -48,9 +40,22 @@ def rate_limit_subjects(request: Request, email: str) -> list[str]:
 async def issue_otp(db: AsyncSession, email: str) -> None:
     await db.execute(delete(EmailVerification).where(EmailVerification.email == email))
     code = f"{secrets.randbelow(10**6):06d}"
-    db.add(EmailVerification(email=email, otp_code=code, expires_at=datetime.now(timezone.utc) + timedelta(minutes=10)))
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
+    user = (await db.execute(select(User).where(User.email == email))).scalar_one_or_none()
+    if user is None:
+        raise RuntimeError(f"Cannot issue a verification code for missing user {email}.")
+    user.is_verified = False
+    user.is_email_verified = False
+    user.otp_code = code
+    user.otp_expires_at = expires_at
+    db.add(EmailVerification(email=email, otp_code=code, expires_at=expires_at))
     await db.commit()
-    send_email(email, "Your KNUST Mart code", f"Your verification code is {code}. It expires in 10 minutes.")
+    send_email(
+        to=email,
+        subject="KNUST Mart - Verify Your Student Email",
+        body=f"Your verification code is: {code}. It expires in 10 minutes.",
+        html_body=f"<p>Your verification code is: <strong>{code}</strong></p>",
+    )
 
 
 async def issue_email_link(db: AsyncSession, email: str) -> None:
@@ -82,11 +87,6 @@ async def issue_email_link(db: AsyncSession, email: str) -> None:
 @router.post("/register", status_code=201)
 async def register(data: RegisterIn, db: AsyncSession = Depends(get_db)):
     email = data.email.lower()
-    is_student_email = email.endswith(STUDENT_DOMAINS)
-    if data.account_type == "student" and not is_student_email:
-        raise HTTPException(422, "Student accounts need an @st.knust.edu.gh or @idl.knust.edu.gh email.")
-    if data.account_type == "external" and is_student_email:
-        raise HTTPException(422, "Use a student account for KNUST student emails.")
     if (await db.execute(select(User).where(User.email == email))).scalar_one_or_none():
         raise HTTPException(409, "An account with this email already exists.")
     user = User(full_name=data.full_name, email=email, password_hash=pwd.hash(data.password),
@@ -106,24 +106,40 @@ async def register(data: RegisterIn, db: AsyncSession = Depends(get_db)):
         await issue_email_link(db, email)
     return {"detail": "Verification instructions sent."}
 
-@router.post("/verify")
-async def verify(data: VerifyIn, request: Request, db: AsyncSession = Depends(get_db)):
-    email = data.email.lower()
+async def verify_otp(email: str, code: str, request: Request, db: AsyncSession):
+    email = email.lower()
     await enforce_rate_limit(
         db, "otp_verify", rate_limit_subjects(request, email), 10, 15 * 60
     )
     rec = (await db.execute(select(EmailVerification).where(EmailVerification.email == email))).scalar_one_or_none()
-    if not rec or not rec.otp_code or rec.expires_at < datetime.now(timezone.utc):
+    now = datetime.now(timezone.utc)
+    if (
+        not rec
+        or not rec.otp_code
+        or rec.expires_at.replace(tzinfo=timezone.utc) < now
+    ):
         raise HTTPException(400, "Code expired. Request a new one.")
     if rec.attempts >= MAX_ATTEMPTS:
         raise HTTPException(429, "Too many attempts. Request a new code.")
-    if not secrets.compare_digest(rec.otp_code, data.otp_code):
+    if not secrets.compare_digest(rec.otp_code, code):
         rec.attempts += 1
         await db.commit()
         raise HTTPException(400, "Incorrect code.")
-    user = (await db.execute(select(User).where(User.email == email))).scalar_one()
+    user = (await db.execute(select(User).where(User.email == email))).scalar_one_or_none()
+    if user is None:
+        raise HTTPException(400, "Verification code is invalid.")
+    if not user.otp_code or not secrets.compare_digest(user.otp_code, code):
+        raise HTTPException(400, "Verification code is invalid.")
+    if (
+        user.otp_expires_at is None
+        or user.otp_expires_at.replace(tzinfo=timezone.utc) < now
+    ):
+        raise HTTPException(400, "Code expired. Request a new one.")
     user.is_email_verified = True
     user.is_verified_student = user.user_type == "student"
+    user.is_verified = True
+    user.otp_code = None
+    user.otp_expires_at = None
     add_notification(
         db, user.id, "account_verified", "Email verified",
         "Your KNUST Mart account is ready to use.", "/",
@@ -132,6 +148,20 @@ async def verify(data: VerifyIn, request: Request, db: AsyncSession = Depends(ge
     await db.commit()
     return {"access_token": make_token(user.email), "user_type": user.user_type}
 
+
+@router.post("/verify")
+async def verify(data: VerifyIn, request: Request, db: AsyncSession = Depends(get_db)):
+    return await verify_otp(data.email, data.otp_code, request, db)
+
+
+@router.post("/verify-email")
+async def verify_email(
+    email: EmailStr,
+    request: Request,
+    code: str = Query(pattern=r"^\d{6}$"),
+    db: AsyncSession = Depends(get_db),
+):
+    return await verify_otp(str(email), code, request, db)
 
 @router.post("/verify-link")
 async def verify_link(data: VerifyLinkIn, db: AsyncSession = Depends(get_db)):
@@ -146,6 +176,7 @@ async def verify_link(data: VerifyLinkIn, db: AsyncSession = Depends(get_db)):
     if user is None:
         raise HTTPException(400, "Verification link expired or invalid. Request a new one.")
     user.is_email_verified = True
+    user.is_verified = True
     add_notification(
         db, user.id, "account_verified", "Email verified",
         "Your KNUST Mart account is ready to use.", "/",
@@ -162,7 +193,7 @@ async def resend(data: ResendIn, request: Request, db: AsyncSession = Depends(ge
         db, "otp_resend", rate_limit_subjects(request, email), 3, 60 * 60
     )
     user = (await db.execute(select(User).where(User.email == email))).scalar_one_or_none()
-    if user:
+    if user and not user.is_email_verified:
         if user.user_type == "student":
             await issue_otp(db, email)
         else:

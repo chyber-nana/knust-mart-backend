@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 import bcrypt
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING
 from jose import jwt, JWTError
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -12,10 +11,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert
 from dotenv import load_dotenv
 from .db import get_db
-from .models import AuthRateLimit
-
-if TYPE_CHECKING:
-    from .models import User
+from .models import AuthRateLimit, User
 
 load_dotenv()
 
@@ -41,7 +37,6 @@ class DirectBcryptHasher:
             return False
 
 pwd = DirectBcryptHasher()
-
 
 async def enforce_rate_limit(
     db: AsyncSession,
@@ -109,7 +104,6 @@ async def current_user(
     except JWTError:
         raise credentials_exception
     
-    from .models import User  # Imported here to prevent circular import issues
     result = await db.execute(select(User).where(User.email == email))
     user = result.scalar_one_or_none()
     if user is None or not user.is_email_verified:
@@ -118,6 +112,17 @@ async def current_user(
         raise HTTPException(status_code=403, detail="This account is suspended.")
     if user.user_type == "student" and not user.is_verified_student:
         raise HTTPException(status_code=403, detail="Verify your student account first.")
+    return user
+
+
+async def get_verified_user(user: User = Depends(current_user)) -> User:
+    if not user.is_email_verified or (
+        user.user_type == "student" and not user.is_verified_student
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Account unverified. Please check your email for the verification code."
+        )
     return user
 
 
@@ -137,8 +142,6 @@ async def appeal_user(
             raise credentials_exception
     except JWTError:
         raise credentials_exception
-
-    from .models import User
 
     user = (await db.execute(select(User).where(User.email == email))).scalar_one_or_none()
     if user is None or not user.is_banned or not user.is_email_verified:

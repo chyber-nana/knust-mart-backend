@@ -158,6 +158,38 @@ async def test_registration_enforces_student_domains_and_sends_otp(web_client):
 
 
 @pytest.mark.asyncio
+async def test_student_otp_is_stored_and_verify_email_alias_activates_account(web_client):
+    client, db, email_calls = web_client
+    email = f"verify-{uuid.uuid4().hex}@st.knust.edu.gh"
+    response = await client.post("/auth/register", json={
+        "full_name": "Student Example",
+        "email": email,
+        "password": "StrongPass#123",
+        "account_type": "student",
+    })
+    assert response.status_code == 201
+
+    user = await db.scalar(select(User).where(User.email == email))
+    assert user is not None
+    code = email_calls[0][2].split("code is: ", 1)[1][:6]
+    assert user.otp_code == code
+    assert user.otp_expires_at is not None
+    assert user.is_verified is False
+
+    verified = await client.post(
+        "/auth/verify-email",
+        params={"email": email, "code": code},
+    )
+    assert verified.status_code == 200
+    await db.refresh(user)
+    assert user.is_verified is True
+    assert user.is_email_verified is True
+    assert user.is_verified_student is True
+    assert user.otp_code is None
+    assert user.otp_expires_at is None
+
+
+@pytest.mark.asyncio
 async def test_otp_expiry_and_five_attempt_limit(web_client):
     client, db, _ = web_client
     user = await add_user(db)

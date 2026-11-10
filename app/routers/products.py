@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..catalog import CATEGORIES, CONDITIONS, DELIVERY_FEE, FEES, LOCATIONS
 from ..db import get_db
 from ..models import ChatMessage, Delivery, Product, ProductImage, Review, User
-from ..security import current_user
+from ..security import get_verified_user
 
 router = APIRouter(prefix="/products", tags=["products"])
 
@@ -75,7 +75,7 @@ async def detail(product_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     return {**card(p, u, imgs), "description": p.description, "images": imgs, "status": p.status}
 
 @router.post("", status_code=201)
-async def create(data: ProductIn, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
+async def create(data: ProductIn, user: User = Depends(get_verified_user), db: AsyncSession = Depends(get_db)):
     if data.category not in CATEGORIES:
         raise HTTPException(422, "Choose a listed category.")
     is_service = data.category == "Services"
@@ -107,7 +107,7 @@ async def owned_product(product_id: uuid.UUID, user: User, db: AsyncSession) -> 
 async def edit_listing(
     product_id: uuid.UUID,
     data: ProductPatch,
-    user: User = Depends(current_user),
+    user: User = Depends(get_verified_user),
     db: AsyncSession = Depends(get_db),
 ):
     product = await owned_product(product_id, user, db)
@@ -148,7 +148,7 @@ async def edit_listing(
 async def set_listing_status(
     product_id: uuid.UUID,
     data: ProductStatusIn,
-    user: User = Depends(current_user),
+    user: User = Depends(get_verified_user),
     db: AsyncSession = Depends(get_db),
 ):
     product = (await db.execute(
@@ -176,7 +176,7 @@ async def set_listing_status(
 @router.delete("/{product_id}", status_code=204)
 async def delete_listing(
     product_id: uuid.UUID,
-    user: User = Depends(current_user),
+    user: User = Depends(get_verified_user),
     db: AsyncSession = Depends(get_db),
 ):
     product = await owned_product(product_id, user, db)
@@ -197,7 +197,7 @@ async def delete_listing(
 @router.post("/{product_id}/promote")
 async def promote_listing(
     product_id: uuid.UUID,
-    user: User = Depends(current_user),
+    user: User = Depends(get_verified_user),
     db: AsyncSession = Depends(get_db),
 ):
     product = await owned_product(product_id, user, db)
