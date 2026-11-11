@@ -1,4 +1,5 @@
 import os
+import re
 import httpx
 
 def send_email(to: str, subject: str, body: str, html_body: str | None = None) -> None:
@@ -9,10 +10,14 @@ def send_verification_email(to: str, verify_url: str, user_name: str = "Student"
     key = os.environ.get("BREVO_API_KEY")
     raw_sender = os.environ.get("MAIL_FROM", "messenger@knustmart.site")
     
+    # Safely extract only the raw HTTP link if any extra label or newline text was passed
+    url_match = re.search(r'https?://[^\s<>"]+|www\.[^\s<>"]+', verify_url)
+    if url_match:
+        verify_url = url_match.group(0)
+
     # Force production frontend domain if localhost or relative path was passed
     frontend_url = os.environ.get("FRONTEND_URL", "https://knustmart.site").rstrip("/")
     if "localhost" in verify_url or "127.0.0.1" in verify_url:
-        # Replaces http://localhost:5173 or http://localhost:8000 with https://knustmart.site
         parts = verify_url.split("/verify", 1)
         if len(parts) > 1:
             verify_url = f"{frontend_url}/verify{parts[1]}"
@@ -113,7 +118,7 @@ def send_verification_email(to: str, verify_url: str, user_name: str = "Student"
                     <p>This link will expire in <strong>24 hours</strong>.</p>
                 </div>
                 <div class="email-footer">
-                    <p>&copy; 2026 KNUST Mart. Built for KNUST students.</p>
+                    <p>© 2026 KNUST Mart. Built for KNUST students.</p>
                 </div>
             </div>
         </div>
