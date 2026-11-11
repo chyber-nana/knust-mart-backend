@@ -11,6 +11,9 @@ class User(Base):
     __table_args__ = (
         CheckConstraint("user_type IN ('student', 'external')", name="users_user_type_check"),
         CheckConstraint("banner_position_y BETWEEN 0 AND 100", name="users_banner_position_y_check"),
+        CheckConstraint("logo_position_x BETWEEN 0 AND 100", name="users_logo_position_x_check"),
+        CheckConstraint("logo_position_y BETWEEN 0 AND 100", name="users_logo_position_y_check"),
+        CheckConstraint("banner_position_x BETWEEN 0 AND 100", name="users_banner_position_x_check"),
     )
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     full_name: Mapped[str] = mapped_column(Text, nullable=False)
@@ -29,7 +32,10 @@ class User(Base):
     store_name: Mapped[str | None] = mapped_column(Text)
     store_bio: Mapped[str | None] = mapped_column(Text)
     logo_url: Mapped[str | None] = mapped_column(Text)
+    logo_position_x: Mapped[int] = mapped_column(default=50, server_default="50", nullable=False)
+    logo_position_y: Mapped[int] = mapped_column(default=50, server_default="50", nullable=False)
     banner_url: Mapped[str | None] = mapped_column(Text)
+    banner_position_x: Mapped[int] = mapped_column(default=50, server_default="50", nullable=False)
     banner_position_y: Mapped[int] = mapped_column(default=50, server_default="50", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 

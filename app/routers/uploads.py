@@ -1,4 +1,5 @@
 import os, uuid, asyncio
+import re
 import boto3
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from ..models import User
@@ -18,6 +19,16 @@ s3 = boto3.client(
 )
 BUCKET = os.environ["R2_BUCKET"]
 PUBLIC_BASE = os.environ["R2_PUBLIC_URL"].rstrip("/")
+UPLOADED_IMAGE_NAME = re.compile(r"[0-9a-f]{32}\.(?:jpg|png|webp)\Z")
+
+
+def is_uploaded_image_url(url: str) -> bool:
+    if url.startswith("/media/"):
+        return True
+    prefix = f"{PUBLIC_BASE}/"
+    if not url.startswith(prefix):
+        return False
+    return UPLOADED_IMAGE_NAME.fullmatch(url[len(prefix):]) is not None
 
 @router.post("", status_code=201)
 async def upload(file: UploadFile = File(...), user: User = Depends(current_user)):

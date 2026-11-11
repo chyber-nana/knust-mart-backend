@@ -20,7 +20,10 @@ CREATE TABLE users (
   store_name TEXT,
   store_bio TEXT,
   logo_url TEXT,
+  logo_position_x INTEGER NOT NULL DEFAULT 50 CHECK (logo_position_x BETWEEN 0 AND 100),
+  logo_position_y INTEGER NOT NULL DEFAULT 50 CHECK (logo_position_y BETWEEN 0 AND 100),
   banner_url TEXT,
+  banner_position_x INTEGER NOT NULL DEFAULT 50 CHECK (banner_position_x BETWEEN 0 AND 100),
   banner_position_y INTEGER NOT NULL DEFAULT 50 CHECK (banner_position_y BETWEEN 0 AND 100),
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );

@@ -8,6 +8,7 @@ from ..catalog import CATEGORIES, CONDITIONS, DELIVERY_FEE, FEES, LOCATIONS
 from ..db import get_db
 from ..models import ChatMessage, Delivery, Product, ProductImage, Review, User
 from ..security import get_verified_user
+from .uploads import is_uploaded_image_url
 
 router = APIRouter(prefix="/products", tags=["products"])
 
@@ -81,7 +82,7 @@ async def create(data: ProductIn, user: User = Depends(get_verified_user), db: A
     is_service = data.category == "Services"
     if not is_service and (data.condition not in CONDITIONS or data.hall_location not in LOCATIONS):
         raise HTTPException(422, "Items need a listed condition and location.")
-    if not all(u.startswith("/media/") for u in data.image_urls):
+    if not all(is_uploaded_image_url(url) for url in data.image_urls):
         raise HTTPException(422, "Upload images through the app first.")
     p = Product(seller_id=user.id, title=data.title.strip(), description=data.description, price=data.price,
                 category=data.category,
@@ -134,7 +135,7 @@ async def edit_listing(
             raise HTTPException(422, "Items need a listed condition and location.")
     image_urls = changes.pop("image_urls", None)
     if image_urls is not None:
-        if not all(url.startswith("/media/") for url in image_urls):
+        if not all(is_uploaded_image_url(url) for url in image_urls):
             raise HTTPException(422, "Upload images through the app first.")
         await db.execute(delete(ProductImage).where(ProductImage.product_id == product.id))
         db.add_all(ProductImage(product_id=product.id, image_url=url) for url in image_urls)

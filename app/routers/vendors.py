@@ -7,6 +7,7 @@ from ..db import get_db
 from ..models import Delivery, Product, Review, User
 from ..security import current_user
 from .products import card, images_for
+from .uploads import is_uploaded_image_url
 
 router = APIRouter(prefix="/vendors", tags=["vendors"])
 
@@ -15,14 +16,17 @@ class StoreIn(BaseModel):
     store_bio: str | None = Field(default=None, max_length=500)
     hostel_or_business_address: str | None = Field(default=None, max_length=120)
     logo_url: str | None = None
+    logo_position_x: int = Field(default=50, ge=0, le=100)
+    logo_position_y: int = Field(default=50, ge=0, le=100)
     banner_url: str | None = None
+    banner_position_x: int = Field(default=50, ge=0, le=100)
     banner_position_y: int = Field(default=50, ge=0, le=100)
 
 @router.patch("/me")
 async def update_store(data: StoreIn, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
     changes = data.model_dump(exclude_unset=True)
     for k in ("logo_url", "banner_url"):
-        if changes.get(k) and not changes[k].startswith("/media/"):
+        if changes.get(k) and not is_uploaded_image_url(changes[k]):
             raise HTTPException(422, "Upload images through the app first.")
     for k, v in changes.items():
         setattr(user, k, v)
@@ -81,7 +85,11 @@ async def discover_vendors(
         "bio": user.store_bio,
         "address": user.hostel_or_business_address,
         "logo_url": user.logo_url,
+        "logo_position_x": user.logo_position_x,
+        "logo_position_y": user.logo_position_y,
         "banner_url": user.banner_url,
+        "banner_position_x": user.banner_position_x,
+        "banner_position_y": user.banner_position_y,
         "rating": float(rating) if rating else None,
         "review_count": review_count,
         "active_listings": active_listings,
@@ -107,6 +115,8 @@ async def storefront(vendor_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     # Public fields only: never expose the vendor's email.
     return {"id": str(u.id), "name": u.store_name or u.full_name, "user_type": u.user_type, "bio": u.store_bio,
             "address": u.hostel_or_business_address, "logo_url": u.logo_url, "banner_url": u.banner_url,
+            "logo_position_x": u.logo_position_x, "logo_position_y": u.logo_position_y,
+            "banner_position_x": u.banner_position_x,
             "banner_position_y": u.banner_position_y,
             "sales": sales, "rating": float(avg) if avg is not None else None, "review_count": n,
             "reviews": [{"id": r.id, "reviewer_name": reviewer.full_name, "rating": r.rating, "comment": r.comment}

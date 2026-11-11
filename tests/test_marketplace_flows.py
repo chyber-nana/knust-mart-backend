@@ -19,6 +19,7 @@ from app.models import (
     Review,
     User,
 )
+from app.routers.uploads import PUBLIC_BASE, is_uploaded_image_url
 from app.security import make_token, pwd
 
 
@@ -187,6 +188,40 @@ async def test_student_otp_is_stored_and_verify_email_alias_activates_account(we
     assert user.is_verified_student is True
     assert user.otp_code is None
     assert user.otp_expires_at is None
+
+
+@pytest.mark.asyncio
+async def test_storefront_accepts_uploaded_public_image_url(web_client):
+    client, db, _ = web_client
+    seller = await add_user(db)
+    logo_url = f"{PUBLIC_BASE}/{'a' * 32}.jpg"
+
+    response = await client.patch(
+        "/vendors/me",
+        headers=auth(seller),
+        json={
+            "logo_url": logo_url,
+            "logo_position_x": 68,
+            "logo_position_y": 27,
+            "banner_position_x": 34,
+            "banner_position_y": 72,
+        },
+    )
+
+    assert response.status_code == 200
+    assert is_uploaded_image_url(logo_url)
+    assert not is_uploaded_image_url("https://example.com/not-uploaded.jpg")
+    await db.refresh(seller)
+    assert seller.logo_url == logo_url
+    assert seller.logo_position_x == 68
+    assert seller.logo_position_y == 27
+    assert seller.banner_position_x == 34
+    assert seller.banner_position_y == 72
+
+    storefront = await client.get(f"/vendors/{seller.id}")
+    assert storefront.status_code == 200
+    assert storefront.json()["logo_position_x"] == 68
+    assert storefront.json()["banner_position_x"] == 34
 
 
 @pytest.mark.asyncio
