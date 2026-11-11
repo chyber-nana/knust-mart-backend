@@ -9,6 +9,16 @@ def send_verification_email(to: str, verify_url: str, user_name: str = "Student"
     key = os.environ.get("BREVO_API_KEY")
     raw_sender = os.environ.get("MAIL_FROM", "messenger@knustmart.site")
     
+    # Force production frontend domain if localhost or relative path was passed
+    frontend_url = os.environ.get("FRONTEND_URL", "https://knustmart.site").rstrip("/")
+    if "localhost" in verify_url or "127.0.0.1" in verify_url:
+        # Replaces http://localhost:5173 or http://localhost:8000 with https://knustmart.site
+        parts = verify_url.split("/verify", 1)
+        if len(parts) > 1:
+            verify_url = f"{frontend_url}/verify{parts[1]}"
+        else:
+            verify_url = f"{frontend_url}{verify_url}"
+
     if "<" in raw_sender and ">" in raw_sender:
         sender_email = raw_sender.split("<")[1].split(">")[0].strip()
         sender_name = raw_sender.split("<")[0].strip()
@@ -18,7 +28,7 @@ def send_verification_email(to: str, verify_url: str, user_name: str = "Student"
 
     subject = "Confirm Your KNUST Mart Email 🚀"
 
-    # HTML body featuring a clean, responsive CTA button
+    # HTML body featuring KNUST Mart green (#16a34a) brand styling
     html_body = f"""
     <!DOCTYPE html>
     <html>
@@ -64,7 +74,7 @@ def send_verification_email(to: str, verify_url: str, user_name: str = "Student"
             }}
             .btn {{
                 display: inline-block;
-                background-color: #2563eb;
+                background-color: #16a34a;
                 color: #ffffff !important;
                 text-decoration: none;
                 font-weight: 600;
