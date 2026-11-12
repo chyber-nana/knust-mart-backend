@@ -253,6 +253,20 @@ async def test_registration_rejects_weak_or_mismatched_passwords(web_client):
 
 
 @pytest.mark.asyncio
+async def test_registration_accepts_eight_character_strong_password(web_client):
+    client, _, _ = web_client
+    password = "Aa1!aaaa"
+    response = await client.post("/auth/register", json={
+        "full_name": "Student Example",
+        "email": f"eight-char-{uuid.uuid4().hex}@st.knust.edu.gh",
+        "password": password,
+        "confirm_password": password,
+        "account_type": "student",
+    })
+    assert response.status_code == 201
+
+
+@pytest.mark.asyncio
 async def test_campus_flyers_are_public_and_admin_managed(web_client, monkeypatch):
     client, db, _ = web_client
     admin = await add_user(db, admin=True)

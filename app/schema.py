@@ -4,8 +4,8 @@ class UserRegisterSchema(BaseModel):
     full_name: str = Field(min_length=2)
     account_type: str = Field(pattern="^(student|external)$")
     email: EmailStr
-    password: str = Field(min_length=12, max_length=72)
-    confirm_password: str = Field(min_length=12, max_length=72)
+    password: str = Field(min_length=8, max_length=72)
+    confirm_password: str = Field(min_length=8, max_length=72)
     hostel_or_business_address: str | None = None
     store_name: str | None = None
 
