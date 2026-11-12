@@ -83,6 +83,16 @@ class ProductImage(Base):
     product_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("products.id", ondelete="CASCADE"), index=True, nullable=False)
     image_url: Mapped[str] = mapped_column(Text, nullable=False)
 
+class CampusAd(Base):
+    __tablename__ = "campus_ads"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    image_url: Mapped[str] = mapped_column(Text, nullable=False)
+    alt_text: Mapped[str] = mapped_column(String(160), nullable=False)
+    link_url: Mapped[str | None] = mapped_column(Text)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true", nullable=False)
+    created_by: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
 
 class ChatMessage(Base):
     __tablename__ = "chat_messages"

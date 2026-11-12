@@ -30,8 +30,7 @@ def is_uploaded_image_url(url: str) -> bool:
         return False
     return UPLOADED_IMAGE_NAME.fullmatch(url[len(prefix):]) is not None
 
-@router.post("", status_code=201)
-async def upload(file: UploadFile = File(...), user: User = Depends(current_user)):
+async def store_image(file: UploadFile) -> str:
     ext = TYPES.get(file.content_type or "")
     if not ext:
         raise HTTPException(415, "Use a JPG, PNG or WebP image.")
@@ -43,4 +42,9 @@ async def upload(file: UploadFile = File(...), user: User = Depends(current_user
     name = f"{uuid.uuid4().hex}{ext}"
     await asyncio.to_thread(s3.put_object, Bucket=BUCKET, Key=name, Body=data,
                             ContentType=file.content_type)
-    return {"url": f"{PUBLIC_BASE}/{name}"}
+    return f"{PUBLIC_BASE}/{name}"
+
+
+@router.post("", status_code=201)
+async def upload(file: UploadFile = File(...), user: User = Depends(current_user)):
+    return {"url": await store_image(file)}

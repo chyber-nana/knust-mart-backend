@@ -54,6 +54,16 @@ CREATE TABLE product_images (
   image_url TEXT NOT NULL
 );
 
+CREATE TABLE campus_ads (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  image_url TEXT NOT NULL,
+  alt_text VARCHAR(160) NOT NULL,
+  link_url TEXT,
+  is_active BOOLEAN NOT NULL DEFAULT TRUE,
+  created_by UUID NOT NULL REFERENCES users(id),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE TABLE email_verifications (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   email VARCHAR(255) NOT NULL,

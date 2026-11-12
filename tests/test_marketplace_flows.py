@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import engine, get_db
 from app.main import app
 from app.models import (
+    CampusAd,
     CourierPayout,
     Delivery,
     EmailVerification,
@@ -222,6 +223,73 @@ async def test_storefront_accepts_uploaded_public_image_url(web_client):
     assert storefront.status_code == 200
     assert storefront.json()["logo_position_x"] == 68
     assert storefront.json()["banner_position_x"] == 34
+
+
+@pytest.mark.asyncio
+async def test_campus_flyers_are_public_and_admin_managed(web_client, monkeypatch):
+    client, db, _ = web_client
+    admin = await add_user(db, admin=True)
+    member = await add_user(db)
+    image_url = f"{PUBLIC_BASE}/{'b' * 32}.png"
+
+    async def fake_store_image(file):
+        assert file.filename == "flyer.png"
+        return image_url
+
+    monkeypatch.setattr("app.routers.ads.store_image", fake_store_image)
+
+    denied = await client.post(
+        "/ads/admin",
+        headers=auth(member),
+        data={"alt_text": "Club event"},
+        files={"file": ("flyer.png", b"image", "image/png")},
+    )
+    assert denied.status_code == 403
+
+    created = await client.post(
+        "/ads/admin",
+        headers=auth(admin),
+        data={"alt_text": "Club event", "link_url": "https://example.com/event"},
+        files={"file": ("flyer.png", b"image", "image/png")},
+    )
+    assert created.status_code == 201
+    created_data = created.json()
+    assert created_data["image_url"] == image_url
+    assert created_data["alt_text"] == "Club event"
+
+    public = await client.get("/ads")
+    assert public.status_code == 200
+    assert [item["id"] for item in public.json()] == [created_data["id"]]
+
+    admin_list = await client.get("/ads/admin", headers=auth(admin))
+    assert admin_list.status_code == 200
+    assert len(admin_list.json()) == 1
+    assert (await client.get("/ads/admin", headers=auth(member))).status_code == 403
+
+    deleted = await client.delete(f"/ads/admin/{created_data['id']}", headers=auth(admin))
+    assert deleted.status_code == 204
+    assert await db.get(CampusAd, uuid.UUID(created_data["id"])) is None
+    assert (await client.get("/ads")).json() == []
+
+
+@pytest.mark.asyncio
+async def test_regular_upload_endpoint_remains_available(web_client, monkeypatch):
+    client, db, _ = web_client
+    member = await add_user(db)
+    image_url = f"{PUBLIC_BASE}/{'c' * 32}.jpg"
+
+    async def fake_store_image(file):
+        return image_url
+
+    monkeypatch.setattr("app.routers.uploads.store_image", fake_store_image)
+    response = await client.post(
+        "/uploads",
+        headers=auth(member),
+        files={"file": ("profile.jpg", b"image", "image/jpeg")},
+    )
+
+    assert response.status_code == 201
+    assert response.json() == {"url": image_url}
 
 
 @pytest.mark.asyncio
