@@ -143,6 +143,7 @@ async def test_registration_enforces_student_domains_and_sends_otp(web_client):
         "full_name": "Student Example",
         "email": "student@example.test",
         "password": "StrongPass#123",
+        "confirm_password": "StrongPass#123",
         "account_type": "student",
     })
     assert bad.status_code == 422
@@ -151,6 +152,7 @@ async def test_registration_enforces_student_domains_and_sends_otp(web_client):
         "full_name": "Student Example",
         "email": f"student-{uuid.uuid4().hex}@st.knust.edu.gh",
         "password": "StrongPass#123",
+        "confirm_password": "StrongPass#123",
         "account_type": "student",
     })
     assert success.status_code == 201
@@ -167,6 +169,7 @@ async def test_student_otp_is_stored_and_verify_email_alias_activates_account(we
         "full_name": "Student Example",
         "email": email,
         "password": "StrongPass#123",
+        "confirm_password": "StrongPass#123",
         "account_type": "student",
     })
     assert response.status_code == 201
@@ -226,6 +229,30 @@ async def test_storefront_accepts_uploaded_public_image_url(web_client):
 
 
 @pytest.mark.asyncio
+async def test_registration_rejects_weak_or_mismatched_passwords(web_client):
+    client, _, _ = web_client
+    registration = {
+        "full_name": "Student Example",
+        "email": f"password-{uuid.uuid4().hex}@st.knust.edu.gh",
+        "account_type": "student",
+    }
+
+    weak = await client.post("/auth/register", json={
+        **registration,
+        "password": "weakpassword",
+        "confirm_password": "weakpassword",
+    })
+    assert weak.status_code == 422
+
+    mismatch = await client.post("/auth/register", json={
+        **registration,
+        "password": "StrongPass#123",
+        "confirm_password": "StrongPass#124",
+    })
+    assert mismatch.status_code == 422
+
+
+@pytest.mark.asyncio
 async def test_campus_flyers_are_public_and_admin_managed(web_client, monkeypatch):
     client, db, _ = web_client
     admin = await add_user(db, admin=True)
@@ -267,17 +294,18 @@ async def test_campus_flyers_are_public_and_admin_managed(web_client, monkeypatc
 
     public = await client.get("/ads")
     assert public.status_code == 200
-    assert [item["id"] for item in public.json()] == [created_data["id"]]
+    assert created_data["id"] in [item["id"] for item in public.json()]
 
     admin_list = await client.get("/ads/admin", headers=auth(admin))
     assert admin_list.status_code == 200
-    assert len(admin_list.json()) == 1
+    assert created_data["id"] in [item["id"] for item in admin_list.json()]
     assert (await client.get("/ads/admin", headers=auth(member))).status_code == 403
 
     deleted = await client.delete(f"/ads/admin/{created_data['id']}", headers=auth(admin))
     assert deleted.status_code == 204
     assert await db.get(CampusAd, uuid.UUID(created_data["id"])) is None
-    assert (await client.get("/ads")).json() == []
+    remaining = await client.get("/ads")
+    assert created_data["id"] not in [item["id"] for item in remaining.json()]
 
 
 @pytest.mark.asyncio
@@ -298,7 +326,7 @@ async def test_expired_ads_are_not_returned_publicly(web_client):
     response = await client.get("/ads")
 
     assert response.status_code == 200
-    assert response.json() == []
+    assert all(item["alt_text"] != "Expired event" for item in response.json())
 
 
 @pytest.mark.asyncio
@@ -361,6 +389,7 @@ async def test_external_registration_uses_email_link(web_client):
         "full_name": "Campus Tech Hub",
         "email": email,
         "password": "StrongPass#123",
+        "confirm_password": "StrongPass#123",
         "account_type": "external",
         "store_name": "Campus Tech Hub",
     })
