@@ -249,13 +249,21 @@ async def test_campus_flyers_are_public_and_admin_managed(web_client, monkeypatc
     created = await client.post(
         "/ads/admin",
         headers=auth(admin),
-        data={"alt_text": "Club event", "link_url": "https://example.com/event"},
+        data={
+            "alt_text": "Club event",
+            "link_url": "https://example.com/event",
+            "duration": "week",
+        },
         files={"file": ("flyer.png", b"image", "image/png")},
     )
     assert created.status_code == 201
     created_data = created.json()
     assert created_data["image_url"] == image_url
     assert created_data["alt_text"] == "Club event"
+    assert created_data["duration"] == "week"
+    expires_at = datetime.fromisoformat(created_data["expires_at"])
+    created_at = datetime.fromisoformat(created_data["created_at"])
+    assert timedelta(days=6, hours=23) < expires_at - created_at < timedelta(days=7, minutes=1)
 
     public = await client.get("/ads")
     assert public.status_code == 200
@@ -270,6 +278,27 @@ async def test_campus_flyers_are_public_and_admin_managed(web_client, monkeypatc
     assert deleted.status_code == 204
     assert await db.get(CampusAd, uuid.UUID(created_data["id"])) is None
     assert (await client.get("/ads")).json() == []
+
+
+@pytest.mark.asyncio
+async def test_expired_ads_are_not_returned_publicly(web_client):
+    client, db, _ = web_client
+    admin = await add_user(db, admin=True)
+    db.add(CampusAd(
+        image_url=f"{PUBLIC_BASE}/{'d' * 32}.jpg",
+        alt_text="Expired event",
+        duration="day",
+        is_active=True,
+        created_by=admin.id,
+        created_at=datetime.now(timezone.utc) - timedelta(days=2),
+        expires_at=datetime.now(timezone.utc) - timedelta(days=1),
+    ))
+    await db.flush()
+
+    response = await client.get("/ads")
+
+    assert response.status_code == 200
+    assert response.json() == []
 
 
 @pytest.mark.asyncio

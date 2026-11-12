@@ -1,3 +1,5 @@
+from datetime import datetime, timedelta, timezone
+from typing import Literal
 from uuid import UUID
 from urllib.parse import urlsplit
 
@@ -19,8 +21,10 @@ def ad_payload(ad: CampusAd) -> dict:
         "image_url": ad.image_url,
         "alt_text": ad.alt_text,
         "link_url": ad.link_url,
+        "duration": ad.duration,
         "is_active": ad.is_active,
         "created_at": ad.created_at,
+        "expires_at": ad.expires_at,
     }
 
 
@@ -38,7 +42,10 @@ def validate_link_url(value: str | None) -> str | None:
 async def list_active_ads(db: AsyncSession = Depends(get_db)):
     ads = (await db.execute(
         select(CampusAd)
-        .where(CampusAd.is_active.is_(True))
+        .where(
+            CampusAd.is_active.is_(True),
+            CampusAd.expires_at > datetime.now(timezone.utc),
+        )
         .order_by(CampusAd.created_at.desc())
     )).scalars().all()
     return [ad_payload(ad) for ad in ads]
@@ -59,6 +66,7 @@ async def list_admin_ads(
 async def create_ad(
     file: UploadFile = File(...),
     alt_text: str = Form(..., min_length=1, max_length=160),
+    duration: Literal["day", "week", "month"] = Form(...),
     link_url: str | None = Form(default=None, max_length=2048),
     admin: User = Depends(admin_user),
     db: AsyncSession = Depends(get_db),
@@ -68,11 +76,16 @@ async def create_ad(
         raise HTTPException(422, "Add text describing the flyer.")
     destination = validate_link_url(link_url)
     image_url = await store_image(file)
+    created_at = datetime.now(timezone.utc)
+    duration_days = {"day": 1, "week": 7, "month": 30}[duration]
     ad = CampusAd(
         image_url=image_url,
         alt_text=description,
         link_url=destination,
+        duration=duration,
         created_by=admin.id,
+        created_at=created_at,
+        expires_at=created_at + timedelta(days=duration_days),
     )
     db.add(ad)
     await db.commit()

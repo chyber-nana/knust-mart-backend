@@ -85,13 +85,21 @@ class ProductImage(Base):
 
 class CampusAd(Base):
     __tablename__ = "campus_ads"
+    __table_args__ = (
+        CheckConstraint(
+            "duration IN ('day', 'week', 'month')",
+            name="campus_ads_duration_check",
+        ),
+    )
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     image_url: Mapped[str] = mapped_column(Text, nullable=False)
     alt_text: Mapped[str] = mapped_column(String(160), nullable=False)
     link_url: Mapped[str | None] = mapped_column(Text)
+    duration: Mapped[str] = mapped_column(String(8), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true", nullable=False)
     created_by: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class ChatMessage(Base):

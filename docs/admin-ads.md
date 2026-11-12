@@ -1,6 +1,6 @@
 # Campus flyer ads
 
-Flyers are managed from the signed-in admin account at `/admin/ads`. Only an account with `is_admin = true` can upload or delete a flyer. Uploaded images use the configured R2 bucket and the public carousel only returns active records.
+Flyers are managed from the signed-in admin account at `/admin/ads`. Only an account with `is_admin = true` can upload or delete a flyer. Uploaded images use the configured R2 bucket and the public carousel only returns active, unexpired ads. The administrator selects a 1-day, 1-week, or 30-day duration after collecting the payment externally; this project does not currently process ad payments or define price amounts.
 
 ## Create or promote the administrator account
 
@@ -26,4 +26,4 @@ Apply the schema migration and start the backend:
 .\venv\Scripts\python.exe -m uvicorn app.main:app --reload
 ```
 
-Sign in to the website with the admin account, then open `/admin/ads`. Choose a JPG, PNG, or WebP flyer (maximum 3 MB), provide image text for accessibility, and optionally add an `http://` or `https://` destination link. Delete a flyer from the same page to remove it from the public carousel.
+Sign in to the website with the admin account, then open `/admin/ads`. Choose a JPG, PNG, or WebP flyer (maximum 3 MB), provide image text for accessibility, select its paid duration, and optionally add an `http://` or `https://` destination link. Ads disappear from the public carousel when their selected duration expires. The migration clears existing flyer records so the new duration rules start cleanly.

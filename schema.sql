@@ -59,9 +59,11 @@ CREATE TABLE campus_ads (
   image_url TEXT NOT NULL,
   alt_text VARCHAR(160) NOT NULL,
   link_url TEXT,
+  duration VARCHAR(8) NOT NULL CHECK (duration IN ('day', 'week', 'month')),
   is_active BOOLEAN NOT NULL DEFAULT TRUE,
   created_by UUID NOT NULL REFERENCES users(id),
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at TIMESTAMPTZ NOT NULL
 );
 
 CREATE TABLE email_verifications (
