@@ -90,8 +90,7 @@ async def register(data: RegisterIn, db: AsyncSession = Depends(get_db)):
     if (await db.execute(select(User).where(User.email == email))).scalar_one_or_none():
         raise HTTPException(409, "An account with this email already exists.")
     user = User(full_name=data.full_name, email=email, password_hash=pwd.hash(data.password),
-                user_type=data.account_type, hostel_or_business_address=data.hostel_or_business_address,
-                store_name=data.store_name)
+                user_type=data.account_type, hostel_or_business_address=data.hostel_or_business_address)
     db.add(user)
     await db.flush()
     add_notification(
@@ -223,7 +222,8 @@ async def login(data: LoginIn, request: Request, db: AsyncSession = Depends(get_
 async def me(user: User = Depends(current_user)):
     return {"id": str(user.id), "full_name": user.full_name, "user_type": user.user_type,
             "is_courier": user.is_courier, "is_verified_student": user.is_verified_student,
-            "is_admin": user.is_admin}
+            "is_admin": user.is_admin, "store_active": user.store_activated_at is not None,
+            "store_name": user.store_name}
 
 
 @router.post("/change-password")

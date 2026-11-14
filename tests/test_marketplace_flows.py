@@ -1,3 +1,6 @@
+import hashlib
+import hmac
+import json
 import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -16,6 +19,7 @@ from app.models import (
     Delivery,
     EmailVerification,
     Notification,
+    Payment,
     Product,
     Review,
     User,
@@ -198,6 +202,9 @@ async def test_student_otp_is_stored_and_verify_email_alias_activates_account(we
 async def test_storefront_accepts_uploaded_public_image_url(web_client):
     client, db, _ = web_client
     seller = await add_user(db)
+    seller.store_activated_at = datetime.now(timezone.utc)
+    seller.store_activation_type = "legacy"
+    await db.flush()
     logo_url = f"{PUBLIC_BASE}/{'a' * 32}.jpg"
 
     response = await client.patch(
@@ -969,3 +976,176 @@ async def test_item_cannot_be_changed_to_service_without_required_item_fields(we
         json={"category": "Textbooks"},
     )
     assert invalid_item.status_code == 422
+
+
+def _signed(secret: str, payload: dict) -> tuple[bytes, dict[str, str]]:
+    raw = json.dumps(payload).encode()
+    signature = hmac.new(secret.encode(), raw, hashlib.sha512).hexdigest()
+    return raw, {"x-paystack-signature": signature, "Content-Type": "application/json"}
+
+
+@pytest.mark.asyncio
+async def test_signup_needs_only_email_and_password_and_ignores_store_name(web_client, monkeypatch):
+    client, db, _ = web_client
+    monkeypatch.setenv("FRONTEND_URL", "https://knustmart.test")
+    student_email = f"s-{uuid.uuid4().hex}@st.knust.edu.gh"
+    vendor_email = f"v-{uuid.uuid4().hex}@gmail.com"
+    base = {"full_name": "Ama Mensah", "password": "StrongPass#123", "confirm_password": "StrongPass#123"}
+
+    student = await client.post("/auth/register", json={**base, "email": student_email})
+    vendor = await client.post("/auth/register", json={**base, "email": vendor_email, "store_name": "Ignored Name"})
+
+    assert student.status_code == vendor.status_code == 201
+    student_row = await db.scalar(select(User).where(User.email == student_email))
+    vendor_row = await db.scalar(select(User).where(User.email == vendor_email))
+    assert student_row.user_type == "student"
+    assert vendor_row.user_type == "external"
+    assert vendor_row.store_name is None
+    assert vendor_row.store_activated_at is None
+
+
+@pytest.mark.asyncio
+async def test_free_launch_slots_then_paid_checkout(web_client, monkeypatch):
+    client, db, _ = web_client
+    monkeypatch.setenv("FREE_STORE_SLOTS", "2")
+    monkeypatch.setenv("FRONTEND_URL", "https://knustmart.test")
+    monkeypatch.setenv("PAYSTACK_SECRET_KEY", "sk_test_unit")
+    legacy = await add_user(db)
+    legacy.store_activated_at = datetime.now(timezone.utc)
+    legacy.store_activation_type = "legacy"  # legacy stores never use up free slots
+    first, second = await add_user(db), await add_user(db)
+    vendor = await add_user(db, user_type="external")
+    seen = {}
+
+    async def fake_initialize(**kwargs):
+        seen.update(kwargs)
+        return {"authorization_url": "https://checkout.paystack.test/abc", "reference": kwargs["reference"]}
+
+    monkeypatch.setattr("app.routers.stores.paystack_initialize", fake_initialize)
+
+    for user in (first, second):
+        done = await client.post("/stores/activate", headers=auth(user), json={"store_name": "Campus Shop"})
+        assert done.status_code == 200
+        assert done.json() == {"status": "active", "activation_type": "free_launch"}
+
+    third = await client.post("/stores/activate", headers=auth(vendor), json={"store_name": "Tech Hub"})
+    assert third.status_code == 200
+    body = third.json()
+    assert body["status"] == "payment_required"
+    assert body["amount"] == 30 and body["currency"] == "GHS"
+    assert seen["amount"] == 3000 and seen["metadata"]["user_id"] == str(vendor.id)
+    payment = await db.scalar(select(Payment).where(Payment.reference == body["reference"]))
+    assert payment.status == "pending" and payment.amount_pesewas == 3000
+    await db.refresh(vendor)
+    assert vendor.store_name == "Tech Hub" and vendor.store_activated_at is None
+
+
+@pytest.mark.asyncio
+async def test_student_pays_25_after_free_slots_are_gone(web_client, monkeypatch):
+    client, db, _ = web_client
+    monkeypatch.setenv("FREE_STORE_SLOTS", "0")
+    monkeypatch.setenv("FRONTEND_URL", "https://knustmart.test")
+    monkeypatch.setenv("PAYSTACK_SECRET_KEY", "sk_test_unit")
+    student = await add_user(db)
+
+    async def fake_initialize(**kwargs):
+        return {"authorization_url": "https://checkout.paystack.test/x"}
+
+    monkeypatch.setattr("app.routers.stores.paystack_initialize", fake_initialize)
+    response = await client.post("/stores/activate", headers=auth(student), json={"store_name": "Textbook Corner"})
+    assert response.json()["status"] == "payment_required"
+    assert response.json()["amount"] == 25
+
+
+@pytest.mark.asyncio
+async def test_paystack_webhook_activates_once_and_rejects_bad_signature_or_amount(web_client, monkeypatch):
+    client, db, _ = web_client
+    secret = "sk_test_unit"
+    monkeypatch.setenv("PAYSTACK_SECRET_KEY", secret)
+    paying, mismatched = await add_user(db), await add_user(db)
+    good = Payment(user_id=paying.id, purpose="store_activation", reference=f"kmart_{uuid.uuid4().hex}",
+                   amount_pesewas=2500, currency="GHS", status="pending")
+    bad = Payment(user_id=mismatched.id, purpose="store_activation", reference=f"kmart_{uuid.uuid4().hex}",
+                  amount_pesewas=2500, currency="GHS", status="pending")
+    db.add_all([good, bad])
+    await db.flush()
+
+    def event(payment, amount):
+        return {"event": "charge.success", "data": {
+            "reference": payment.reference, "status": "success", "amount": amount, "currency": "GHS"}}
+
+    raw, _headers = _signed(secret, event(good, 2500))
+    forged = await client.post("/payments/paystack/webhook", content=raw,
+                               headers={"x-paystack-signature": "0" * 128})
+    assert forged.status_code == 401
+    await db.refresh(paying)
+    assert paying.store_activated_at is None
+
+    for _ in range(2):  # Paystack retries: the second delivery must be harmless
+        raw, headers = _signed(secret, event(good, 2500))
+        ok = await client.post("/payments/paystack/webhook", content=raw, headers=headers)
+        assert ok.status_code == 200
+    await db.refresh(paying)
+    assert paying.store_activation_type == "paid" and paying.store_activated_at is not None
+    notices = (await db.execute(select(Notification).where(
+        Notification.user_id == paying.id, Notification.notification_type == "store_activated"))).scalars().all()
+    assert len(notices) == 1
+
+    raw, headers = _signed(secret, event(bad, 100))
+    await client.post("/payments/paystack/webhook", content=raw, headers=headers)
+    await db.refresh(mismatched)
+    await db.refresh(bad)
+    assert bad.status == "flagged" and mismatched.store_activated_at is None
+
+
+@pytest.mark.asyncio
+async def test_verify_endpoint_settles_payment_for_its_owner_only(web_client, monkeypatch):
+    client, db, _ = web_client
+    monkeypatch.setenv("PAYSTACK_SECRET_KEY", "sk_test_unit")
+    owner, other = await add_user(db), await add_user(db)
+    payment = Payment(user_id=owner.id, purpose="store_activation", reference=f"kmart_{uuid.uuid4().hex}",
+                      amount_pesewas=2500, currency="GHS", status="pending")
+    db.add(payment)
+    await db.flush()
+
+    async def fake_verify(reference):
+        return {"status": "success", "amount": 2500, "currency": "GHS", "reference": reference}
+
+    monkeypatch.setattr("app.routers.payments.paystack_verify", fake_verify)
+    assert (await client.get(f"/payments/verify/{payment.reference}", headers=auth(other))).status_code == 404
+    done = await client.get(f"/payments/verify/{payment.reference}", headers=auth(owner))
+    assert done.status_code == 200
+    assert done.json() == {"status": "success", "store_active": True}
+
+
+@pytest.mark.asyncio
+async def test_business_is_required_for_external_listing_and_storefront_edits(web_client):
+    client, db, _ = web_client
+    vendor = await add_user(db, user_type="external")
+    student = await add_user(db)
+    listing = {"title": "Phone case", "description": "New", "price": "10.00", "category": "Electronics",
+               "condition": "New", "hall_location": "Unity", "image_urls": [f"{PUBLIC_BASE}/{'b' * 32}.jpg"]}
+
+    blocked_listing = await client.post("/products", headers=auth(vendor), json=listing)
+    blocked_store = await client.patch("/vendors/me", headers=auth(student), json={"store_bio": "Hello"})
+    student_listing = await client.post("/products", headers=auth(student), json=listing)
+
+    assert blocked_listing.status_code == 403
+    assert blocked_store.status_code == 403
+    assert student_listing.status_code == 201  # students can still sell personal items without a business
+
+
+@pytest.mark.asyncio
+async def test_vendor_discovery_lists_only_activated_stores(web_client):
+    client, db, _ = web_client
+    active, inactive = await add_user(db), await add_user(db)
+    for user, activated in ((active, True), (inactive, False)):
+        user.store_name = f"Shop {user.id.hex[:6]}"
+        if activated:
+            user.store_activated_at = datetime.now(timezone.utc)
+            user.store_activation_type = "free_launch"
+    await db.flush()
+    discovered = (await client.get("/vendors")).json()
+    ids = {vendor["id"] for vendor in discovered}
+    assert str(inactive.id) not in ids
+    assert str(active.id) in ids or len(discovered) == 12  # discovery is capped at 12 stores

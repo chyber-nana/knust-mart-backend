@@ -77,6 +77,8 @@ async def detail(product_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
 
 @router.post("", status_code=201)
 async def create(data: ProductIn, user: User = Depends(get_verified_user), db: AsyncSession = Depends(get_db)):
+    if user.user_type == "external" and user.store_activated_at is None:
+        raise HTTPException(403, "Create your business to start selling.")
     if data.category not in CATEGORIES:
         raise HTTPException(422, "Choose a listed category.")
     is_service = data.category == "Services"

@@ -24,6 +24,8 @@ class StoreIn(BaseModel):
 
 @router.patch("/me")
 async def update_store(data: StoreIn, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
+    if user.store_activated_at is None:
+        raise HTTPException(403, "Create your business first.")
     changes = data.model_dump(exclude_unset=True)
     for k in ("logo_url", "banner_url"):
         if changes.get(k) and not is_uploaded_image_url(changes[k]):
@@ -68,7 +70,7 @@ async def discover_vendors(
         .where(
             User.is_banned.is_(False),
             User.is_email_verified.is_(True),
-            User.store_name.is_not(None),
+            User.store_activated_at.is_not(None),
         )
         .order_by(
             score.desc(),

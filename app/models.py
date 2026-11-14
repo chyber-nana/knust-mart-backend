@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 from sqlalchemy import BigInteger, CHAR, ForeignKey, String, Text, Numeric, DateTime, Boolean, func, CheckConstraint, UniqueConstraint, Index, SmallInteger, text
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 from .db import Base
 
@@ -10,6 +10,10 @@ class User(Base):
     __tablename__ = "users"
     __table_args__ = (
         CheckConstraint("user_type IN ('student', 'external')", name="users_user_type_check"),
+        CheckConstraint(
+            "store_activation_type IN ('free_launch', 'paid', 'legacy')",
+            name="users_store_activation_type_check",
+        ),
         CheckConstraint("banner_position_y BETWEEN 0 AND 100", name="users_banner_position_y_check"),
         CheckConstraint("logo_position_x BETWEEN 0 AND 100", name="users_logo_position_x_check"),
         CheckConstraint("logo_position_y BETWEEN 0 AND 100", name="users_logo_position_y_check"),
@@ -37,6 +41,8 @@ class User(Base):
     banner_url: Mapped[str | None] = mapped_column(Text)
     banner_position_x: Mapped[int] = mapped_column(default=50, server_default="50", nullable=False)
     banner_position_y: Mapped[int] = mapped_column(default=50, server_default="50", nullable=False)
+    store_activated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    store_activation_type: Mapped[str | None] = mapped_column(Text, nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 class EmailVerification(Base):
@@ -230,3 +236,22 @@ class CourierPayout(Base):
     amount: Mapped[Decimal] = mapped_column(Numeric(8, 2), nullable=False)
     status: Mapped[str] = mapped_column(Text, default="pending", server_default="'pending'", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class Payment(Base):
+    __tablename__ = "payments"
+    __table_args__ = (
+        CheckConstraint("amount_pesewas > 0", name="payments_amount_check"),
+        CheckConstraint("status IN ('pending', 'success', 'flagged', 'failed')", name="payments_status_check"),
+        UniqueConstraint("reference", name="payments_reference_key"),
+    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    purpose: Mapped[str] = mapped_column(Text, nullable=False)
+    reference: Mapped[str] = mapped_column(Text, nullable=False)
+    amount_pesewas: Mapped[int] = mapped_column(nullable=False)
+    currency: Mapped[str] = mapped_column(String(3), default="GHS", server_default="GHS", nullable=False)
+    status: Mapped[str] = mapped_column(Text, default="pending", server_default="pending", nullable=False)
+    provider_payload: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

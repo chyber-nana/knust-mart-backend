@@ -2,7 +2,7 @@ from pydantic import BaseModel, EmailStr, Field, field_validator, model_validato
 
 class UserRegisterSchema(BaseModel):
     full_name: str = Field(min_length=2)
-    account_type: str = Field(pattern="^(student|external)$")
+    account_type: str | None = Field(default=None, pattern="^(student|external)$")
     email: EmailStr
     password: str = Field(min_length=8, max_length=72)
     confirm_password: str = Field(min_length=8, max_length=72)
@@ -30,6 +30,9 @@ class UserRegisterSchema(BaseModel):
             raise ValueError("Passwords do not match.")
         allowed = ("@st.knust.edu.gh", "@idl.knust.edu.gh")
         is_student_email = str(self.email).lower().endswith(allowed)
+        if self.account_type is None:
+            # Signup only needs an email and password: a KNUST email makes a student account.
+            self.account_type = "student" if is_student_email else "external"
         if self.account_type == "student" and not is_student_email:
             raise ValueError("Student accounts need an @st.knust.edu.gh or @idl.knust.edu.gh email.")
         if self.account_type == "external" and is_student_email:

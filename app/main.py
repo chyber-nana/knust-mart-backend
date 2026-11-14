@@ -6,7 +6,7 @@ load_dotenv()
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from .routers import ads, appeals, auth, deliveries, messages, notifications, products, reviews, uploads, vendors
+from .routers import ads, appeals, auth, deliveries, messages, notifications, payments, products, reviews, stores, uploads, vendors
 
 # Add this right at the very bottom of your main.py file:
 app = FastAPI(title="KNUST Mart API")
@@ -37,3 +37,5 @@ app.include_router(reviews.router)
 app.include_router(vendors.router)
 app.include_router(uploads.router)
 app.include_router(ads.router)
+app.include_router(stores.router)
+app.include_router(payments.router)
