@@ -1,7 +1,8 @@
 import os
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..billing import (
@@ -12,6 +13,7 @@ from ..db import get_db
 from ..models import Payment, User
 from ..notifications import add_notification
 from ..security import get_verified_user
+from ..terms import TERMS_VERSION
 
 router = APIRouter(prefix="/stores", tags=["stores"])
 
@@ -19,6 +21,16 @@ router = APIRouter(prefix="/stores", tags=["stores"])
 class ActivateIn(BaseModel):
     store_name: str = Field(min_length=2, max_length=80)
     hostel_or_business_address: str | None = Field(default=None, max_length=120)
+    business_terms_accepted: bool
+    business_terms_version: str = Field(min_length=1, max_length=32)
+
+    @model_validator(mode="after")
+    def validate_business_terms(self):
+        if not self.business_terms_accepted:
+            raise ValueError("You must accept the Business Terms to create a business.")
+        if self.business_terms_version != TERMS_VERSION:
+            raise ValueError("The Business Terms have changed. Please review and accept the current version.")
+        return self
 
 
 @router.get("/activation")
@@ -41,6 +53,8 @@ async def activate_store(data: ActivateIn, user: User = Depends(get_verified_use
     if len(name) < 2:
         raise HTTPException(422, "Enter a business name.")
     user.store_name = name
+    user.business_terms_accepted_at = datetime.now(timezone.utc)
+    user.business_terms_version = TERMS_VERSION
     if data.hostel_or_business_address is not None:
         user.hostel_or_business_address = data.hostel_or_business_address.strip() or None
 

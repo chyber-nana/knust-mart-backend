@@ -13,6 +13,7 @@ from ..mailer import send_email
 from ..models import EmailVerification, PasswordReset, User
 from ..notifications import add_notification
 from ..schema import UserRegisterSchema as RegisterIn, check_password_strength
+from ..terms import TERMS_VERSION
 from ..security import SECRET, current_user, enforce_rate_limit, make_token, pwd
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -112,7 +113,8 @@ async def register(data: RegisterIn, db: AsyncSession = Depends(get_db)):
     if (await db.execute(select(User).where(User.email == email))).scalar_one_or_none():
         raise HTTPException(409, "An account with this email already exists.")
     user = User(full_name=data.full_name, email=email, password_hash=pwd.hash(data.password),
-                user_type=data.account_type, hostel_or_business_address=data.hostel_or_business_address)
+                user_type=data.account_type, hostel_or_business_address=data.hostel_or_business_address,
+                terms_accepted_at=datetime.now(timezone.utc), terms_version=TERMS_VERSION)
     db.add(user)
     await db.flush()
     add_notification(

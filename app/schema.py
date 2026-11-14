@@ -1,4 +1,5 @@
 from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
+from .terms import TERMS_VERSION
 
 def check_password_strength(value: str) -> str:
     if len(value.encode("utf-8")) > 72:
@@ -20,6 +21,8 @@ class UserRegisterSchema(BaseModel):
     email: EmailStr
     password: str = Field(min_length=8, max_length=72)
     confirm_password: str = Field(min_length=8, max_length=72)
+    terms_accepted: bool
+    terms_version: str = Field(min_length=1, max_length=32)
     hostel_or_business_address: str | None = None
     store_name: str | None = None
 
@@ -30,6 +33,10 @@ class UserRegisterSchema(BaseModel):
 
     @model_validator(mode="after")
     def validate_registration_email(self) -> UserRegisterSchema:
+        if not self.terms_accepted:
+            raise ValueError("You must accept the Terms and Conditions to create an account.")
+        if self.terms_version != TERMS_VERSION:
+            raise ValueError("The Terms and Conditions have changed. Please review and accept the current version.")
         if self.password != self.confirm_password:
             raise ValueError("Passwords do not match.")
         allowed = ("@st.knust.edu.gh", "@idl.knust.edu.gh")

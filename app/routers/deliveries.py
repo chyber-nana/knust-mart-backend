@@ -129,6 +129,65 @@ async def request_delivery(data: DeliveryIn, user: User = Depends(current_user),
     return {"id": str(d.id), "status": d.status, "delivery_fee": str(d.delivery_fee)}
 
 
+@router.post("/{delivery_id}/cancel")
+async def cancel_delivery(
+    delivery_id: str,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    d = await get_delivery(db, delivery_id)
+    if d.buyer_id != user.id:
+        raise HTTPException(403, "Only the buyer can cancel this order.")
+    cancellable = (
+        {"awaiting_seller", "pending", "accepted"}
+        if d.fulfillment_type == "courier"
+        else {"awaiting_seller", "ready_for_pickup"}
+    )
+    if d.status not in cancellable:
+        raise HTTPException(409, "This order can no longer be cancelled after handoff.")
+
+    product = (await db.execute(
+        select(Product).where(Product.id == d.product_id).with_for_update()
+    )).scalar_one_or_none()
+    if product is None:
+        raise HTTPException(409, "The listing for this order no longer exists.")
+    d.status = "cancelled"
+    if product.status == "reserved":
+        product.status = "active"
+    add_notification(
+        db, user.id, "order_cancelled", "Order cancelled",
+        f"Your order for {product.title} was cancelled.",
+        f"/orders/{d.id}",
+    )
+    add_notification(
+        db, product.seller_id, "order_cancelled", "Order cancelled",
+        f"The buyer cancelled their request for {product.title}.",
+        f"/orders/{d.id}",
+    )
+    if d.courier_id:
+        add_notification(
+            db, d.courier_id, "order_cancelled", "Delivery request cancelled",
+            f"The buyer cancelled the delivery for {product.title} before handoff.",
+            "/courier",
+        )
+    elif d.fulfillment_type == "courier":
+        courier_ids = await db.scalars(
+            select(User.id).where(
+                User.is_courier.is_(True),
+                User.is_banned.is_(False),
+                User.id != user.id,
+            )
+        )
+        for courier_id in courier_ids:
+            add_notification(
+                db, courier_id, "order_cancelled", "Delivery request cancelled",
+                f"The buyer cancelled the delivery for {product.title} before a courier picked it up.",
+                "/courier",
+            )
+    await db.commit()
+    return {"status": d.status}
+
+
 @router.post("/{delivery_id}/seller-response")
 async def seller_response(
     delivery_id: str,

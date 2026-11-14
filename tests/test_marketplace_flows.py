@@ -26,6 +26,13 @@ from app.models import (
 )
 from app.routers.uploads import PUBLIC_BASE, is_uploaded_image_url
 from app.security import make_token, pwd
+from app.terms import TERMS_VERSION
+
+TERMS_ACCEPTANCE = {"terms_accepted": True, "terms_version": TERMS_VERSION}
+BUSINESS_TERMS_ACCEPTANCE = {
+    "business_terms_accepted": True,
+    "business_terms_version": TERMS_VERSION,
+}
 
 
 @pytest.fixture
@@ -119,11 +126,13 @@ async def add_delivery(
     *,
     courier: User | None = None,
     status: str = "pending",
+    fulfillment_type: str = "courier",
 ) -> Delivery:
     delivery = Delivery(
         product_id=product.id,
         buyer_id=buyer.id,
         courier_id=courier.id if courier else None,
+        fulfillment_type=fulfillment_type,
         pickup_location="Unity",
         dropoff_location="Main Library",
         delivery_fee=Decimal("5.00"),
@@ -144,6 +153,7 @@ def auth(user: User) -> dict[str, str]:
 async def test_registration_enforces_student_domains_and_sends_otp(web_client):
     client, _, email_calls = web_client
     bad = await client.post("/auth/register", json={
+        **TERMS_ACCEPTANCE,
         "full_name": "Student Example",
         "email": "student@example.test",
         "password": "StrongPass#123",
@@ -153,6 +163,7 @@ async def test_registration_enforces_student_domains_and_sends_otp(web_client):
     assert bad.status_code == 422
 
     success = await client.post("/auth/register", json={
+        **TERMS_ACCEPTANCE,
         "full_name": "Student Example",
         "email": f"student-{uuid.uuid4().hex}@st.knust.edu.gh",
         "password": "StrongPass#123",
@@ -170,6 +181,7 @@ async def test_student_otp_is_stored_and_verify_email_alias_activates_account(we
     client, db, email_calls = web_client
     email = f"verify-{uuid.uuid4().hex}@st.knust.edu.gh"
     response = await client.post("/auth/register", json={
+        **TERMS_ACCEPTANCE,
         "full_name": "Student Example",
         "email": email,
         "password": "StrongPass#123",
@@ -184,6 +196,8 @@ async def test_student_otp_is_stored_and_verify_email_alias_activates_account(we
     assert user.otp_code == code
     assert user.otp_expires_at is not None
     assert user.is_verified is False
+    assert user.terms_accepted_at is not None
+    assert user.terms_version == TERMS_VERSION
 
     verified = await client.post(
         "/auth/verify-email",
@@ -196,6 +210,77 @@ async def test_student_otp_is_stored_and_verify_email_alias_activates_account(we
     assert user.is_verified_student is True
     assert user.otp_code is None
     assert user.otp_expires_at is None
+
+
+@pytest.mark.asyncio
+async def test_registration_requires_current_terms_acceptance(web_client):
+    client, _, _ = web_client
+    request = {
+        "full_name": "Student Example",
+        "email": f"terms-{uuid.uuid4().hex}@st.knust.edu.gh",
+        "password": "StrongPass#123",
+        "confirm_password": "StrongPass#123",
+    }
+    missing = await client.post("/auth/register", json=request)
+    declined = await client.post("/auth/register", json={
+        **request,
+        "terms_accepted": False,
+        "terms_version": TERMS_VERSION,
+    })
+    stale = await client.post("/auth/register", json={
+        **request,
+        "terms_accepted": True,
+        "terms_version": "old-version",
+    })
+    assert missing.status_code == 422
+    assert declined.status_code == 422
+    assert stale.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_buyer_can_cancel_before_courier_handoff(web_client):
+    client, db, _ = web_client
+    buyer = await add_user(db)
+    seller = await add_user(db)
+    courier = await add_user(db, courier=True)
+    product = await add_product(db, seller, status="reserved")
+    delivery = await add_delivery(db, product, buyer, courier=courier, status="accepted")
+
+    response = await client.post(f"/deliveries/{delivery.id}/cancel", headers=auth(buyer))
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "cancelled"}
+    await db.refresh(delivery)
+    await db.refresh(product)
+    assert delivery.status == "cancelled"
+    assert product.status == "active"
+    assert await db.scalar(select(Notification.id).where(
+        Notification.user_id == seller.id,
+        Notification.notification_type == "order_cancelled",
+    )) is not None
+    assert await db.scalar(select(Notification.id).where(
+        Notification.user_id == courier.id,
+        Notification.notification_type == "order_cancelled",
+    )) is not None
+
+
+@pytest.mark.asyncio
+async def test_buyer_cannot_cancel_after_handoff_or_cancel_another_buyers_order(web_client):
+    client, db, _ = web_client
+    buyer = await add_user(db)
+    other_buyer = await add_user(db)
+    seller = await add_user(db)
+    courier = await add_user(db, courier=True)
+    product = await add_product(db, seller, status="reserved")
+    delivery = await add_delivery(db, product, buyer, courier=courier, status="in_transit")
+
+    late_cancel = await client.post(f"/deliveries/{delivery.id}/cancel", headers=auth(buyer))
+    unauthorized = await client.post(f"/deliveries/{delivery.id}/cancel", headers=auth(other_buyer))
+
+    assert late_cancel.status_code == 409
+    assert unauthorized.status_code == 403
+    await db.refresh(delivery)
+    assert delivery.status == "in_transit"
 
 
 @pytest.mark.asyncio
@@ -245,6 +330,7 @@ async def test_registration_rejects_weak_or_mismatched_passwords(web_client):
     }
 
     weak = await client.post("/auth/register", json={
+        **TERMS_ACCEPTANCE,
         **registration,
         "password": "weakpassword",
         "confirm_password": "weakpassword",
@@ -252,6 +338,7 @@ async def test_registration_rejects_weak_or_mismatched_passwords(web_client):
     assert weak.status_code == 422
 
     mismatch = await client.post("/auth/register", json={
+        **TERMS_ACCEPTANCE,
         **registration,
         "password": "StrongPass#123",
         "confirm_password": "StrongPass#124",
@@ -264,6 +351,7 @@ async def test_registration_accepts_eight_character_strong_password(web_client):
     client, _, _ = web_client
     password = "Aa1!aaaa"
     response = await client.post("/auth/register", json={
+        **TERMS_ACCEPTANCE,
         "full_name": "Student Example",
         "email": f"eight-char-{uuid.uuid4().hex}@st.knust.edu.gh",
         "password": password,
@@ -407,6 +495,7 @@ async def test_external_registration_uses_email_link(web_client):
     client, db, email_calls = web_client
     email = f"vendor-{uuid.uuid4().hex}@gmail.com"
     response = await client.post("/auth/register", json={
+        **TERMS_ACCEPTANCE,
         "full_name": "Campus Tech Hub",
         "email": email,
         "password": "StrongPass#123",
@@ -990,7 +1079,12 @@ async def test_signup_needs_only_email_and_password_and_ignores_store_name(web_c
     monkeypatch.setenv("FRONTEND_URL", "https://knustmart.test")
     student_email = f"s-{uuid.uuid4().hex}@st.knust.edu.gh"
     vendor_email = f"v-{uuid.uuid4().hex}@gmail.com"
-    base = {"full_name": "Ama Mensah", "password": "StrongPass#123", "confirm_password": "StrongPass#123"}
+    base = {
+        **TERMS_ACCEPTANCE,
+        "full_name": "Ama Mensah",
+        "password": "StrongPass#123",
+        "confirm_password": "StrongPass#123",
+    }
 
     student = await client.post("/auth/register", json={**base, "email": student_email})
     vendor = await client.post("/auth/register", json={**base, "email": vendor_email, "store_name": "Ignored Name"})
@@ -1024,11 +1118,20 @@ async def test_free_launch_slots_then_paid_checkout(web_client, monkeypatch):
     monkeypatch.setattr("app.routers.stores.paystack_initialize", fake_initialize)
 
     for user in (first, second):
-        done = await client.post("/stores/activate", headers=auth(user), json={"store_name": "Campus Shop"})
+        done = await client.post("/stores/activate", headers=auth(user), json={
+            **BUSINESS_TERMS_ACCEPTANCE,
+            "store_name": "Campus Shop",
+        })
         assert done.status_code == 200
         assert done.json() == {"status": "active", "activation_type": "free_launch"}
+        await db.refresh(user)
+        assert user.business_terms_accepted_at is not None
+        assert user.business_terms_version == TERMS_VERSION
 
-    third = await client.post("/stores/activate", headers=auth(vendor), json={"store_name": "Tech Hub"})
+    third = await client.post("/stores/activate", headers=auth(vendor), json={
+        **BUSINESS_TERMS_ACCEPTANCE,
+        "store_name": "Tech Hub",
+    })
     assert third.status_code == 200
     body = third.json()
     assert body["status"] == "payment_required"
@@ -1047,12 +1150,21 @@ async def test_student_pays_25_after_free_slots_are_gone(web_client, monkeypatch
     monkeypatch.setenv("FRONTEND_URL", "https://knustmart.test")
     monkeypatch.setenv("PAYSTACK_SECRET_KEY", "sk_test_unit")
     student = await add_user(db)
+    missing_acceptance = await client.post(
+        "/stores/activate",
+        headers=auth(student),
+        json={"store_name": "Textbook Corner"},
+    )
+    assert missing_acceptance.status_code == 422
 
     async def fake_initialize(**kwargs):
         return {"authorization_url": "https://checkout.paystack.test/x"}
 
     monkeypatch.setattr("app.routers.stores.paystack_initialize", fake_initialize)
-    response = await client.post("/stores/activate", headers=auth(student), json={"store_name": "Textbook Corner"})
+    response = await client.post("/stores/activate", headers=auth(student), json={
+        **BUSINESS_TERMS_ACCEPTANCE,
+        "store_name": "Textbook Corner",
+    })
     assert response.json()["status"] == "payment_required"
     assert response.json()["amount"] == 25
 

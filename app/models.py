@@ -29,6 +29,10 @@ class User(Base):
     is_verified: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)
     otp_code: Mapped[str | None] = mapped_column(String(6), nullable=True)
     otp_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    terms_accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    terms_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    business_terms_accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    business_terms_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
     is_courier: Mapped[bool] = mapped_column(default=False, server_default="false", nullable=False)
     is_banned: Mapped[bool] = mapped_column(default=False, server_default="false", nullable=False)
     is_admin: Mapped[bool] = mapped_column(default=False, server_default="false", nullable=False)
@@ -155,7 +159,7 @@ class Delivery(Base):
     __tablename__ = "deliveries"
     __table_args__ = (
         CheckConstraint(
-            "status IN ('awaiting_seller', 'pending', 'ready_for_pickup', 'accepted', 'in_transit', 'delivered', 'failed', 'disputed')",
+            "status IN ('awaiting_seller', 'pending', 'ready_for_pickup', 'accepted', 'in_transit', 'delivered', 'failed', 'disputed', 'cancelled')",
             name="deliveries_status_check",
         ),
         CheckConstraint(
