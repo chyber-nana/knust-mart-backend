@@ -1,5 +1,19 @@
 from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
 
+def check_password_strength(value: str) -> str:
+    if len(value.encode("utf-8")) > 72:
+        raise ValueError("Password must be no more than 72 bytes.")
+    if not any(char.islower() for char in value):
+        raise ValueError("Password must include a lowercase letter.")
+    if not any(char.isupper() for char in value):
+        raise ValueError("Password must include an uppercase letter.")
+    if not any(char.isdigit() for char in value):
+        raise ValueError("Password must include a number.")
+    if not any(not char.isalnum() for char in value):
+        raise ValueError("Password must include a symbol.")
+    return value
+
+
 class UserRegisterSchema(BaseModel):
     full_name: str = Field(min_length=2)
     account_type: str | None = Field(default=None, pattern="^(student|external)$")
@@ -12,17 +26,7 @@ class UserRegisterSchema(BaseModel):
     @field_validator("password", "confirm_password")
     @classmethod
     def validate_password_strength(cls, value: str) -> str:
-        if len(value.encode("utf-8")) > 72:
-            raise ValueError("Password must be no more than 72 bytes.")
-        if not any(char.islower() for char in value):
-            raise ValueError("Password must include a lowercase letter.")
-        if not any(char.isupper() for char in value):
-            raise ValueError("Password must include an uppercase letter.")
-        if not any(char.isdigit() for char in value):
-            raise ValueError("Password must include a number.")
-        if not any(not char.isalnum() for char in value):
-            raise ValueError("Password must include a symbol.")
-        return value
+        return check_password_strength(value)
 
     @model_validator(mode="after")
     def validate_registration_email(self) -> UserRegisterSchema:

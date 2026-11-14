@@ -1149,3 +1149,37 @@ async def test_vendor_discovery_lists_only_activated_stores(web_client):
     ids = {vendor["id"] for vendor in discovered}
     assert str(inactive.id) not in ids
     assert str(active.id) in ids or len(discovered) == 12  # discovery is capped at 12 stores
+
+
+@pytest.mark.asyncio
+async def test_password_reset_flow_with_code(web_client):
+    client, db, email_calls = web_client
+    user = await add_user(db)
+    unknown = await client.post("/auth/forgot-password", json={"email": f"nobody-{uuid.uuid4().hex}@gmail.com"})
+    assert unknown.status_code == 200 and not email_calls  # same reply, no email, no account leak
+
+    asked = await client.post("/auth/forgot-password", json={"email": user.email})
+    assert asked.status_code == 200 and asked.json() == unknown.json()
+    assert len(email_calls) == 1 and email_calls[0][0] == user.email
+    code = next(part.rstrip(".") for part in email_calls[0][2].split() if part.rstrip(".").isdigit() and len(part.rstrip(".")) == 6)
+
+    weak = await client.post("/auth/reset-password", json={"email": user.email, "otp_code": code, "new_password": "weakpassword"})
+    wrong = await client.post("/auth/reset-password", json={"email": user.email, "otp_code": "000000" if code != "000000" else "111111", "new_password": "BrandNew#789"})
+    done = await client.post("/auth/reset-password", json={"email": user.email, "otp_code": code, "new_password": "BrandNew#789"})
+    reused = await client.post("/auth/reset-password", json={"email": user.email, "otp_code": code, "new_password": "BrandNew#789"})
+    login = await client.post("/auth/login", json={"email": user.email, "password": "BrandNew#789"})
+
+    assert weak.status_code == 422
+    assert wrong.status_code == 400
+    assert done.status_code == 200
+    assert reused.status_code == 400  # a code only works once
+    assert login.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_change_password_enforces_the_same_strength_rules(web_client):
+    client, db, _ = web_client
+    user = await add_user(db)
+    weak = await client.post("/auth/change-password", headers=auth(user),
+                             json={"current_password": "StrongPass#123", "new_password": "weakpassword"})
+    assert weak.status_code == 422

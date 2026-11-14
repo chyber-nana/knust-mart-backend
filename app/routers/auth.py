@@ -1,17 +1,19 @@
+import hashlib
+import hmac
 import os
 import secrets
 from html import escape
 from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from ..db import get_db
 from ..mailer import send_email
-from ..models import EmailVerification, User
+from ..models import EmailVerification, PasswordReset, User
 from ..notifications import add_notification
-from ..schema import UserRegisterSchema as RegisterIn
-from ..security import current_user, enforce_rate_limit, make_token, pwd
+from ..schema import UserRegisterSchema as RegisterIn, check_password_strength
+from ..security import SECRET, current_user, enforce_rate_limit, make_token, pwd
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 MAX_ATTEMPTS = 5
@@ -22,7 +24,27 @@ class LoginIn(BaseModel):
 
 class ChangePasswordIn(BaseModel):
     current_password: str
-    new_password: str = Field(min_length=8, max_length=128)
+    new_password: str = Field(min_length=8, max_length=72)
+
+    @field_validator("new_password")
+    @classmethod
+    def strong_password(cls, value: str) -> str:
+        return check_password_strength(value)
+
+
+class ForgotPasswordIn(BaseModel):
+    email: EmailStr
+
+
+class ResetPasswordIn(BaseModel):
+    email: EmailStr
+    otp_code: str = Field(pattern=r"^\d{6}$")
+    new_password: str = Field(min_length=8, max_length=72)
+
+    @field_validator("new_password")
+    @classmethod
+    def strong_password(cls, value: str) -> str:
+        return check_password_strength(value)
 
 class VerifyIn(BaseModel):
     email: EmailStr
@@ -239,3 +261,53 @@ async def change_password(
     user.password_hash = pwd.hash(data.new_password)
     await db.commit()
     return {"detail": "Password updated."}
+
+
+def _reset_code_hash(email: str, code: str) -> str:
+    return hmac.new(SECRET.encode(), f"{email}:{code}".encode(), hashlib.sha256).hexdigest()
+
+
+@router.post("/forgot-password")
+async def forgot_password(data: ForgotPasswordIn, request: Request, db: AsyncSession = Depends(get_db)):
+    """Email a 6-digit reset code. The reply is identical whether or not the account exists."""
+    email = data.email.lower()
+    await enforce_rate_limit(db, "password_reset", rate_limit_subjects(request, email), 3, 15 * 60)
+    user = (await db.execute(select(User).where(User.email == email))).scalar_one_or_none()
+    if user is not None and user.is_email_verified:
+        code = f"{secrets.randbelow(10**6):06d}"
+        await db.execute(delete(PasswordReset).where(PasswordReset.email == email))
+        db.add(PasswordReset(
+            email=email,
+            code_hash=_reset_code_hash(email, code),
+            expires_at=datetime.now(timezone.utc) + timedelta(minutes=10),
+        ))
+        await db.commit()
+        send_email(
+            to=email,
+            subject="KNUST Mart - Reset your password",
+            body=f"Your password reset code is: {code}. It expires in 10 minutes. If you did not ask for this, ignore this email.",
+            html_body=f"<p>Your password reset code is: <strong>{code}</strong></p><p>It expires in 10 minutes. If you did not ask for this, ignore this email.</p>",
+        )
+    return {"detail": "If that account exists, a reset code was sent."}
+
+
+@router.post("/reset-password")
+async def reset_password(data: ResetPasswordIn, request: Request, db: AsyncSession = Depends(get_db)):
+    email = data.email.lower()
+    await enforce_rate_limit(db, "password_reset_verify", rate_limit_subjects(request, email), 10, 15 * 60)
+    rec = (await db.execute(select(PasswordReset).where(PasswordReset.email == email))).scalar_one_or_none()
+    if rec is None or rec.expires_at.replace(tzinfo=timezone.utc) < datetime.now(timezone.utc):
+        raise HTTPException(400, "Code expired. Request a new one.")
+    if rec.attempts >= MAX_ATTEMPTS:
+        raise HTTPException(429, "Too many attempts. Request a new code.")
+    if not hmac.compare_digest(rec.code_hash, _reset_code_hash(email, data.otp_code)):
+        rec.attempts += 1
+        await db.commit()
+        raise HTTPException(400, "Incorrect code.")
+    user = (await db.execute(select(User).where(User.email == email))).scalar_one_or_none()
+    if user is None:
+        raise HTTPException(400, "Code expired. Request a new one.")
+    user.password_hash = pwd.hash(data.new_password)
+    await db.delete(rec)
+    await db.commit()
+    return {"detail": "Password updated. You can sign in now."}
