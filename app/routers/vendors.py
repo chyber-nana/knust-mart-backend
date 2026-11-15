@@ -1,20 +1,30 @@
 import uuid
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from ..db import get_db
-from ..models import Delivery, Product, Review, User
-from ..security import current_user
+from ..models import Delivery, Product, Review, User, UserBadge
+from ..security import admin_user, current_user
 from .products import card, images_for
 from .uploads import is_uploaded_image_url
 
 router = APIRouter(prefix="/vendors", tags=["vendors"])
+BADGE_LABELS = {
+    "pioneer": "Pioneer",
+    "top_rated": "Top Rated",
+    "fast_responder": "Fast Responder",
+    "verified_student": "Verified Student",
+    "campus_legend": "Campus Legend",
+    "trusted_vendor": "Trusted Vendor",
+}
 
 class StoreIn(BaseModel):
     store_name: str | None = Field(default=None, max_length=80)
     store_bio: str | None = Field(default=None, max_length=500)
     hostel_or_business_address: str | None = Field(default=None, max_length=120)
+    phone_number: str | None = Field(default=None, max_length=32, pattern=r"^(?:\+?[0-9][0-9 ()-]{5,30})?$")
+    whatsapp_number: str | None = Field(default=None, max_length=32, pattern=r"^(?:\+?[0-9][0-9 ()-]{5,30})?$")
     logo_url: str | None = None
     logo_position_x: int = Field(default=50, ge=0, le=100)
     logo_position_y: int = Field(default=50, ge=0, le=100)
@@ -24,16 +34,70 @@ class StoreIn(BaseModel):
 
 @router.patch("/me")
 async def update_store(data: StoreIn, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
-    if user.store_activated_at is None:
-        raise HTTPException(403, "Create your business first.")
     changes = data.model_dump(exclude_unset=True)
+    store_changes = set(changes) - {"phone_number", "whatsapp_number"}
+    if store_changes and user.store_activated_at is None:
+        raise HTTPException(403, "Create your business first.")
     for k in ("logo_url", "banner_url"):
         if changes.get(k) and not is_uploaded_image_url(changes[k]):
             raise HTTPException(422, "Upload images through the app first.")
     for k, v in changes.items():
-        setattr(user, k, v)
+        setattr(user, k, v.strip() or None if isinstance(v, str) else v)
     await db.commit()
     return {"id": str(user.id)}
+
+
+class ContactIn(BaseModel):
+    phone_number: str | None = Field(default=None, max_length=32, pattern=r"^(?:\+?[0-9][0-9 ()-]{5,30})?$")
+    whatsapp_number: str | None = Field(default=None, max_length=32, pattern=r"^(?:\+?[0-9][0-9 ()-]{5,30})?$")
+    hostel_or_business_address: str | None = Field(default=None, max_length=120)
+
+
+@router.patch("/me/contacts")
+async def update_contacts(
+    data: ContactIn,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    user.phone_number = data.phone_number.strip() or None if data.phone_number is not None else None
+    user.whatsapp_number = data.whatsapp_number.strip() or None if data.whatsapp_number is not None else None
+    user.hostel_or_business_address = (
+        data.hostel_or_business_address.strip() or None
+        if data.hostel_or_business_address is not None else None
+    )
+    await db.commit()
+    return {
+        "phone_number": user.phone_number,
+        "whatsapp_number": user.whatsapp_number,
+        "hostel_or_business_address": user.hostel_or_business_address,
+    }
+
+
+async def public_badges(db: AsyncSession, user: User) -> list[str]:
+    stored = set((await db.scalars(select(UserBadge.badge_key).where(UserBadge.user_id == user.id))).all())
+    if user.is_verified_student:
+        stored.add("verified_student")
+    completed = select(func.count(Delivery.id)).join(Product, Product.id == Delivery.product_id).where(
+        Product.seller_id == user.id, Delivery.status == "delivered"
+    )
+    count = await db.scalar(completed) or 0
+    average = await db.scalar(select(func.avg(Review.rating)).where(Review.vendor_id == user.id))
+    if count >= 5 and average is not None and float(average) >= 4.5:
+        stored.update(("top_rated", "trusted_vendor"))
+    responder_times = select(
+        func.avg(func.extract("epoch", Delivery.seller_responded_at - Delivery.created_at) / 60)
+    ).join(Product, Product.id == Delivery.product_id).where(
+        Product.seller_id == user.id, Delivery.seller_responded_at.is_not(None)
+    )
+    avg_response = await db.scalar(responder_times)
+    response_count = await db.scalar(
+        select(func.count(Delivery.id)).join(Product, Product.id == Delivery.product_id).where(
+            Product.seller_id == user.id, Delivery.seller_responded_at.is_not(None)
+        )
+    )
+    if response_count and response_count >= 5 and avg_response is not None and float(avg_response) < 15:
+        stored.add("fast_responder")
+    return sorted(stored)
 
 
 @router.get("")
@@ -116,7 +180,8 @@ async def storefront(vendor_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     imgs = await images_for(db, [p.id for p in rows])
     # Public fields only: never expose the vendor's email.
     return {"id": str(u.id), "name": u.store_name or u.full_name, "user_type": u.user_type, "bio": u.store_bio,
-            "address": u.hostel_or_business_address, "logo_url": u.logo_url, "banner_url": u.banner_url,
+            "address": u.hostel_or_business_address, "phone_number": u.phone_number, "whatsapp_number": u.whatsapp_number,
+            "badges": await public_badges(db, u), "logo_url": u.logo_url, "banner_url": u.banner_url,
             "logo_position_x": u.logo_position_x, "logo_position_y": u.logo_position_y,
             "banner_position_x": u.banner_position_x,
             "banner_position_y": u.banner_position_y,
@@ -124,3 +189,75 @@ async def storefront(vendor_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
             "reviews": [{"id": r.id, "reviewer_name": reviewer.full_name, "rating": r.rating, "comment": r.comment}
                         for r, reviewer in reviews],
             "products": [card(p, u, imgs.get(p.id, [])) for p in rows]}
+
+
+@router.get("/admin/badges/users")
+async def badge_users(
+    q: str | None = None,
+    _: User = Depends(admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    stmt = select(User).where(User.is_banned.is_(False)).order_by(User.created_at.desc()).limit(100)
+    if q and q.strip():
+        term = f"%{q.strip()}%"
+        stmt = stmt.where((User.full_name.ilike(term)) | (User.email.ilike(term)) | (User.store_name.ilike(term)))
+    users = (await db.scalars(stmt)).all()
+    badges_by_user: dict[uuid.UUID, list[str]] = {user.id: [] for user in users}
+    if users:
+        for user_id, badge_key in (await db.execute(
+            select(UserBadge.user_id, UserBadge.badge_key).where(
+                UserBadge.user_id.in_(badges_by_user)
+            )
+        )).all():
+            badges_by_user[user_id].append(badge_key)
+    custom_badges = {
+        key: key.removeprefix("custom:")
+        for values in badges_by_user.values()
+        for key in values
+        if key.startswith("custom:")
+    }
+    result = []
+    for user in users:
+        result.append({
+            "id": str(user.id), "name": user.store_name or user.full_name, "email": user.email,
+            "badges": sorted(badges_by_user[user.id]), "verified_student": user.is_verified_student,
+        })
+    return {"available_badges": {**BADGE_LABELS, **custom_badges}, "users": result}
+
+
+class BadgeUpdateIn(BaseModel):
+    badges: list[str] = Field(max_length=6)
+
+
+@router.put("/admin/badges/users/{user_id}")
+async def update_badges(
+    user_id: uuid.UUID,
+    data: BadgeUpdateIn,
+    admin: User = Depends(admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    badges = [
+        f"custom:{key.removeprefix('custom:').strip()}"
+        if key.startswith("custom:") else key
+        for key in data.badges
+    ]
+    valid = all(
+        key in BADGE_LABELS
+        or (
+            key.startswith("custom:")
+            and 1 <= len(key.removeprefix("custom:")) <= 33
+        )
+        for key in badges
+    )
+    if len(set(badges)) != len(badges) or not valid:
+        raise HTTPException(422, "Choose valid badges without duplicates.")
+    user = await db.get(User, user_id)
+    if user is None:
+        raise HTTPException(404, "User not found.")
+    await db.execute(delete(UserBadge).where(UserBadge.user_id == user.id))
+    db.add_all(
+        UserBadge(user_id=user.id, badge_key=key, assigned_by=admin.id)
+        for key in badges
+    )
+    await db.commit()
+    return {"badges": badges}

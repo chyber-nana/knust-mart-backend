@@ -30,8 +30,8 @@ HALLS = {
 
 class DeliveryIn(BaseModel):
     product_id: uuid.UUID
-    pickup_location: str
-    dropoff_location: str
+    pickup_location: str | None = None
+    dropoff_location: str | None = None
     fulfillment_type: Literal["courier", "pickup"] = "courier"
     delivery_fee: Decimal | None = None
 
@@ -75,8 +75,8 @@ async def toggle_courier(user: User = Depends(current_user), db: AsyncSession = 
 
 @router.post("", status_code=201)
 async def request_delivery(data: DeliveryIn, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
-    if data.pickup_location not in HALLS or data.dropoff_location not in HALLS:
-        raise HTTPException(422, "Choose a listed hall or hub.")
+    if data.fulfillment_type == "courier" and data.dropoff_location not in HALLS:
+        raise HTTPException(422, "Choose a listed hall or hub for delivery.")
     result = await db.execute(
         select(Product).where(Product.id == data.product_id).with_for_update()
     )
@@ -86,13 +86,24 @@ async def request_delivery(data: DeliveryIn, user: User = Depends(current_user),
     if product.seller_id == user.id:
         raise HTTPException(409, "You cannot request delivery for your own listing.")
 
+    seller = await db.get(User, product.seller_id)
+    if seller is None:
+        raise HTTPException(404, "Seller not found.")
+    pickup_location = seller.hostel_or_business_address or product.hall_location
+    if not pickup_location:
+        raise HTTPException(409, "The seller has not added a pickup location yet.")
+    if data.fulfillment_type == "pickup":
+        dropoff_location = pickup_location
+    else:
+        dropoff_location = data.dropoff_location
+
     product.status = "reserved"
     d = Delivery(
         product_id=product.id,
         buyer_id=user.id,
         fulfillment_type=data.fulfillment_type,
-        pickup_location=data.pickup_location,
-        dropoff_location=data.dropoff_location,
+        pickup_location=pickup_location,
+        dropoff_location=dropoff_location,
         delivery_fee=DELIVERY_FEE if data.fulfillment_type == "courier" else Decimal("0.00"),
         delivery_qr_token=secrets.token_urlsafe(32),
         pin_code=f"{secrets.randbelow(10**6):06d}",
@@ -202,6 +213,8 @@ async def seller_response(
     if d.status != "awaiting_seller":
         raise HTTPException(409, "This order is no longer waiting for the seller.")
 
+    now = datetime.now(timezone.utc)
+    d.seller_responded_at = now
     if not data.available:
         d.status = "failed"
         product.status = "active"
@@ -213,7 +226,6 @@ async def seller_response(
         await db.commit()
         return {"status": d.status}
 
-    now = datetime.now(timezone.utc)
     if d.fulfillment_type == "pickup":
         d.status = "ready_for_pickup"
         add_notification(

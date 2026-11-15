@@ -44,7 +44,10 @@ async def images_for(db: AsyncSession, ids: list) -> dict:
 def card(p: Product, u: User, imgs: list[str]) -> dict:
     return {"id": str(p.id), "title": p.title, "price": float(p.price), "category": p.category, "condition": p.condition,
             "hall_location": p.hall_location, "image": imgs[0] if imgs else None, "is_promoted": bool(p.is_promoted),
-            "seller": {"id": str(u.id), "name": u.store_name or u.full_name, "user_type": u.user_type}}
+            "seller": {
+                "id": str(u.id), "name": u.store_name or u.full_name, "user_type": u.user_type,
+                "pickup_location": u.hostel_or_business_address or p.hall_location,
+            }}
 
 @router.get("/meta")
 async def meta():
@@ -73,7 +76,17 @@ async def detail(product_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
         raise HTTPException(404, "Listing not found.")
     p, u = row
     imgs = (await images_for(db, [p.id])).get(p.id, [])
-    return {**card(p, u, imgs), "description": p.description, "images": imgs, "status": p.status}
+    return {
+        **card(p, u, imgs),
+        "description": p.description,
+        "images": imgs,
+        "status": p.status,
+        "seller": {
+            "id": str(u.id), "name": u.store_name or u.full_name, "user_type": u.user_type,
+            "pickup_location": u.hostel_or_business_address or p.hall_location,
+            "phone_number": u.phone_number, "whatsapp_number": u.whatsapp_number,
+        },
+    }
 
 @router.post("", status_code=201)
 async def create(data: ProductIn, user: User = Depends(get_verified_user), db: AsyncSession = Depends(get_db)):

@@ -39,6 +39,8 @@ class User(Base):
     hostel_or_business_address: Mapped[str | None] = mapped_column(Text)
     store_name: Mapped[str | None] = mapped_column(Text)
     store_bio: Mapped[str | None] = mapped_column(Text)
+    phone_number: Mapped[str | None] = mapped_column(String(32))
+    whatsapp_number: Mapped[str | None] = mapped_column(String(32))
     logo_url: Mapped[str | None] = mapped_column(Text)
     logo_position_x: Mapped[int] = mapped_column(default=50, server_default="50", nullable=False)
     logo_position_y: Mapped[int] = mapped_column(default=50, server_default="50", nullable=False)
@@ -60,6 +62,18 @@ class EmailVerification(Base):
     verification_token: Mapped[str | None] = mapped_column(String(128), nullable=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     attempts: Mapped[int] = mapped_column(default=0, server_default="0", nullable=False)
+
+
+class UserBadge(Base):
+    __tablename__ = "user_badges"
+    __table_args__ = (
+        UniqueConstraint("user_id", "badge_key", name="user_badges_user_badge_key"),
+    )
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False)
+    badge_key: Mapped[str] = mapped_column(String(40), nullable=False)
+    assigned_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
 class Category(Base):
@@ -182,6 +196,7 @@ class Delivery(Base):
     dropoff_location: Mapped[str] = mapped_column(Text, nullable=False)
     delivery_fee: Mapped[Decimal] = mapped_column(Numeric(8, 2), nullable=False)
     courier_available_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    seller_responded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     delivery_qr_token: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
     pin_code: Mapped[str] = mapped_column(CHAR(6), nullable=False)
     status: Mapped[str] = mapped_column(Text, default="pending", server_default="'pending'", nullable=False)

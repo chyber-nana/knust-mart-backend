@@ -6,11 +6,11 @@ from html import escape
 from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, EmailStr, Field, field_validator
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from ..db import get_db
 from ..mailer import send_email
-from ..models import EmailVerification, PasswordReset, User
+from ..models import EmailVerification, PasswordReset, User, UserBadge
 from ..notifications import add_notification
 from ..schema import UserRegisterSchema as RegisterIn, check_password_strength
 from ..terms import TERMS_VERSION
@@ -112,11 +112,15 @@ async def register(data: RegisterIn, db: AsyncSession = Depends(get_db)):
     email = data.email.lower()
     if (await db.execute(select(User).where(User.email == email))).scalar_one_or_none():
         raise HTTPException(409, "An account with this email already exists.")
+    await db.execute(text("SELECT pg_advisory_xact_lock(70631742)"))
     user = User(full_name=data.full_name, email=email, password_hash=pwd.hash(data.password),
                 user_type=data.account_type, hostel_or_business_address=data.hostel_or_business_address,
                 terms_accepted_at=datetime.now(timezone.utc), terms_version=TERMS_VERSION)
     db.add(user)
     await db.flush()
+    registered_count = await db.scalar(select(func.count(User.id)))
+    if registered_count is not None and registered_count <= 10:
+        db.add(UserBadge(user_id=user.id, badge_key="pioneer"))
     add_notification(
         db, user.id, "account_created", "Account created",
         "Verify your email address to finish setting up your account.",
@@ -247,7 +251,9 @@ async def me(user: User = Depends(current_user)):
     return {"id": str(user.id), "full_name": user.full_name, "user_type": user.user_type,
             "is_courier": user.is_courier, "is_verified_student": user.is_verified_student,
             "is_admin": user.is_admin, "store_active": user.store_activated_at is not None,
-            "store_name": user.store_name}
+            "store_name": user.store_name, "phone_number": user.phone_number,
+            "whatsapp_number": user.whatsapp_number,
+            "hostel_or_business_address": user.hostel_or_business_address}
 
 
 @router.post("/change-password")
