@@ -11,6 +11,7 @@ CREATE TABLE users (
   is_verified_student BOOLEAN NOT NULL DEFAULT FALSE,
   is_email_verified BOOLEAN NOT NULL DEFAULT FALSE,
   is_verified BOOLEAN NOT NULL DEFAULT FALSE,
+  anonymized_at TIMESTAMPTZ,
   otp_code VARCHAR(6),
   otp_expires_at TIMESTAMPTZ,
   is_courier BOOLEAN NOT NULL DEFAULT FALSE,

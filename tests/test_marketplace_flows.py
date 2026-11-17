@@ -15,6 +15,7 @@ from app.db import engine, get_db
 from app.main import app
 from app.models import (
     CampusAd,
+    ChatMessage,
     CourierPayout,
     Delivery,
     EmailVerification,
@@ -1295,3 +1296,80 @@ async def test_change_password_enforces_the_same_strength_rules(web_client):
     weak = await client.post("/auth/change-password", headers=auth(user),
                              json={"current_password": "StrongPass#123", "new_password": "weakpassword"})
     assert weak.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_admin_anonymizes_user_without_deleting_chat_history(web_client):
+    client, db, _ = web_client
+    admin = await add_user(db, user_type="external", admin=True)
+    target = await add_user(db)
+    recipient = await add_user(db, user_type="external")
+    product = await add_product(db, target)
+    message = ChatMessage(
+        product_id=product.id,
+        sender_id=target.id,
+        receiver_id=recipient.id,
+        message="Please meet at the library.",
+    )
+    db.add(message)
+    await db.flush()
+    target_id = target.id
+    original_email = target.email
+
+    response = await client.delete(
+        f"/admin/users/{target_id}",
+        headers=auth(admin),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"id": str(target_id), "anonymized": True}
+    await db.refresh(target)
+    assert target.full_name == "Deleted user"
+    assert target.email != original_email
+    assert target.email.endswith("@anonymized.invalid")
+    assert target.is_banned is True
+    assert target.is_email_verified is False
+    assert target.phone_number is None
+    assert target.hostel_or_business_address is None
+    assert target.anonymized_at is not None
+    preserved_message = await db.get(ChatMessage, message.id)
+    assert preserved_message is not None
+    assert preserved_message.sender_id == target_id
+
+
+@pytest.mark.asyncio
+async def test_admin_cannot_anonymize_another_admin_or_self(web_client):
+    client, db, _ = web_client
+    admin = await add_user(db, user_type="external", admin=True)
+    other_admin = await add_user(db, user_type="external", admin=True)
+
+    self_response = await client.delete(
+        f"/admin/users/{admin.id}",
+        headers=auth(admin),
+    )
+    other_response = await client.delete(
+        f"/admin/users/{other_admin.id}",
+        headers=auth(admin),
+    )
+
+    assert self_response.status_code == 400
+    assert other_response.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_admin_cannot_anonymize_user_with_active_order(web_client):
+    client, db, _ = web_client
+    admin = await add_user(db, user_type="external", admin=True)
+    seller = await add_user(db)
+    buyer = await add_user(db, user_type="external")
+    product = await add_product(db, seller)
+    await add_delivery(db, product, buyer, status="pending")
+
+    response = await client.delete(
+        f"/admin/users/{seller.id}",
+        headers=auth(admin),
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Resolve this user's active orders before anonymizing the account."
+    assert seller.anonymized_at is None

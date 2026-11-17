@@ -29,6 +29,7 @@ class User(Base):
     is_verified: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)
     otp_code: Mapped[str | None] = mapped_column(String(6), nullable=True)
     otp_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    anonymized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     terms_accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     terms_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
     business_terms_accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
