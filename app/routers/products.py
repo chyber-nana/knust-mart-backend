@@ -8,6 +8,7 @@ from ..catalog import CATEGORIES, CONDITIONS, DELIVERY_FEE, FEES, LOCATIONS
 from ..db import get_db
 from ..models import ChatMessage, Delivery, Product, ProductImage, Review, User
 from ..security import get_verified_user
+from ..stock import sync_after_stock_edit
 from .uploads import is_uploaded_image_url
 
 router = APIRouter(prefix="/products", tags=["products"])
@@ -20,6 +21,7 @@ class ProductIn(BaseModel):
     condition: str | None = None
     hall_location: str | None = None
     image_urls: list[str] = Field(min_length=1, max_length=5)
+    stock: int | None = Field(default=None, ge=0, le=100000)
 
 class ProductPatch(BaseModel):
     title: str | None = Field(default=None, min_length=3, max_length=120)
@@ -29,6 +31,7 @@ class ProductPatch(BaseModel):
     condition: str | None = None
     hall_location: str | None = None
     image_urls: list[str] | None = Field(default=None, min_length=1, max_length=5)
+    stock: int | None = Field(default=None, ge=0, le=100000)
 
 class ProductStatusIn(BaseModel):
     status: str = Field(pattern="^(active|reserved|sold)$")
@@ -43,7 +46,7 @@ async def images_for(db: AsyncSession, ids: list) -> dict:
 
 def card(p: Product, u: User, imgs: list[str]) -> dict:
     return {"id": str(p.id), "title": p.title, "price": float(p.price), "category": p.category, "condition": p.condition,
-            "hall_location": p.hall_location, "image": imgs[0] if imgs else None, "is_promoted": bool(p.is_promoted),
+            "hall_location": p.hall_location, "stock": p.stock, "image": imgs[0] if imgs else None, "is_promoted": bool(p.is_promoted),
             "seller": {
                 "id": str(u.id), "name": u.store_name or u.full_name, "user_type": u.user_type,
                 "pickup_location": u.hostel_or_business_address or p.hall_location,
@@ -97,12 +100,15 @@ async def create(data: ProductIn, user: User = Depends(get_verified_user), db: A
     is_service = data.category == "Services"
     if not is_service and (data.condition not in CONDITIONS or data.hall_location not in LOCATIONS):
         raise HTTPException(422, "Items need a listed condition and location.")
+    if not is_service and (data.stock is None or data.stock < 1):
+        raise HTTPException(422, "Enter how many units you have in stock.")
     if not all(is_uploaded_image_url(url) for url in data.image_urls):
         raise HTTPException(422, "Upload images through the app first.")
     p = Product(seller_id=user.id, title=data.title.strip(), description=data.description, price=data.price,
                 category=data.category,
                 condition=None if is_service else data.condition,
-                hall_location=None if is_service else data.hall_location)
+                hall_location=None if is_service else data.hall_location,
+                stock=None if is_service else data.stock)
     db.add(p)
     await db.flush()
     db.add_all(ProductImage(product_id=p.id, image_url=u) for u in data.image_urls)
@@ -127,6 +133,8 @@ async def edit_listing(
     db: AsyncSession = Depends(get_db),
 ):
     product = await owned_product(product_id, user, db)
+    await db.refresh(product, with_for_update=True)
+    old_stock = product.stock
     changes = data.model_dump(exclude_unset=True)
     for key in ("title", "price", "category"):
         if key in changes and changes[key] is None:
@@ -143,7 +151,12 @@ async def edit_listing(
     if category == "Services":
         changes["condition"] = None
         changes["hall_location"] = None
+        changes["stock"] = None
     else:
+        stock = changes["stock"] if "stock" in changes else product.stock
+        if stock is None:
+            raise HTTPException(422, "Items need a stock quantity.")
+        changes["stock"] = stock
         condition = changes.get("condition", product.condition)
         location = changes.get("hall_location", product.hall_location)
         if condition not in CONDITIONS or location not in LOCATIONS:
@@ -156,6 +169,8 @@ async def edit_listing(
         db.add_all(ProductImage(product_id=product.id, image_url=url) for url in image_urls)
     for key, value in changes.items():
         setattr(product, key, value.strip() if key == "title" and value else value)
+    if product.stock != old_stock:
+        await sync_after_stock_edit(db, product)
     await db.commit()
     return {"id": str(product.id)}
 
@@ -184,6 +199,8 @@ async def set_listing_status(
     )
     if active_order and data.status != "reserved":
         raise HTTPException(409, "This listing has an active order and cannot be reopened or marked sold.")
+    if data.status == "active" and product.stock is not None and product.stock < 1:
+        raise HTTPException(409, "Add stock before reopening this listing.")
     product.status = data.status
     await db.commit()
     return {"status": product.status}

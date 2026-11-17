@@ -12,6 +12,7 @@ from ..catalog import DELIVERY_FEE
 from ..db import get_db
 from ..mailer import send_email
 from ..models import CourierPayout, Delivery, Product, Review, User
+from ..stock import complete_unit, release_unit, take_unit
 from ..notifications import add_notification
 from ..security import current_user
 
@@ -83,6 +84,8 @@ async def request_delivery(data: DeliveryIn, user: User = Depends(current_user),
     product = result.scalar_one_or_none()
     if product is None or product.status != "active":
         raise HTTPException(409, "This listing is not available.")
+    if product.stock is not None and product.stock < 1:
+        raise HTTPException(409, "This listing is out of stock.")
     if product.seller_id == user.id:
         raise HTTPException(409, "You cannot request delivery for your own listing.")
 
@@ -97,7 +100,7 @@ async def request_delivery(data: DeliveryIn, user: User = Depends(current_user),
     else:
         dropoff_location = data.dropoff_location
 
-    product.status = "reserved"
+    take_unit(product)
     d = Delivery(
         product_id=product.id,
         buyer_id=user.id,
@@ -163,8 +166,7 @@ async def cancel_delivery(
     if product is None:
         raise HTTPException(409, "The listing for this order no longer exists.")
     d.status = "cancelled"
-    if product.status == "reserved":
-        product.status = "active"
+    release_unit(product)
     add_notification(
         db, user.id, "order_cancelled", "Order cancelled",
         f"Your order for {product.title} was cancelled.",
@@ -217,7 +219,7 @@ async def seller_response(
     d.seller_responded_at = now
     if not data.available:
         d.status = "failed"
-        product.status = "active"
+        release_unit(product)
         add_notification(
             db, d.buyer_id, "order_unavailable", "Item unavailable",
             f"The seller could not fulfill your order for {product.title}.",
@@ -366,7 +368,7 @@ async def confirm_pickup(
         raise HTTPException(409, "The listing for this order no longer exists.")
     d.status = "delivered"
     d.completed_at = datetime.now(timezone.utc)
-    product.status = "sold"
+    await complete_unit(db, product, d.id)
     add_notification(
         db, d.buyer_id, "order_delivered", "Pickup confirmed",
         f"You confirmed pickup of {product.title}.",
@@ -409,7 +411,7 @@ async def scan(delivery_id: str, data: ScanIn, user: User = Depends(current_user
     product = await db.get(Product, d.product_id)
     if product is None:
         raise HTTPException(409, "The listing for this delivery no longer exists.")
-    product.status = "sold"
+    await complete_unit(db, product, d.id)
     add_notification(
         db, d.buyer_id, "order_delivered", "Order received",
         f"{product.title} was marked as delivered. You can now review the seller.",
@@ -442,8 +444,8 @@ async def fail(delivery_id: str, user: User = Depends(current_user), db: AsyncSe
         raise HTTPException(409, "Not your active job.")
     d.status = "failed"
     product = await db.get(Product, d.product_id)
-    if product is not None and product.status == "reserved":
-        product.status = "active"
+    if product is not None:
+        release_unit(product)
     if product is not None:
         add_notification(
             db, d.buyer_id, "order_failed", "Delivery not completed",
@@ -466,7 +468,7 @@ async def report_stolen(delivery_id: str, user: User = Depends(current_user), db
         raise HTTPException(409, "This order can't be reported.")
     d.status = "disputed"
     product = await db.get(Product, d.product_id)
-    if product is not None and product.status == "active":
+    if product is not None and product.stock is None and product.status == "active":
         product.status = "reserved"
     if product is not None:
         add_notification(
