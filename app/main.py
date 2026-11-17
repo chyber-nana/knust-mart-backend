@@ -40,3 +40,9 @@ app.include_router(uploads.router)
 app.include_router(ads.router)
 app.include_router(stores.router)
 app.include_router(payments.router)
+
+@app.on_event("startup")
+async def _ensure_stock_column() -> None:
+    from .db import engine
+    from .stock import ensure_stock_column
+    await ensure_stock_column(engine)

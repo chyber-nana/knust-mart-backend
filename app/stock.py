@@ -49,3 +49,24 @@ async def sync_after_stock_edit(db, product: Product) -> None:
             product.status = "active"
     elif product.status == "active":
         product.status = "reserved" if await active_orders(db, product.id) else "sold"
+
+
+async def ensure_stock_column(engine) -> None:
+    """Idempotent one-time migration, run at startup so the API never queries a missing column."""
+    from sqlalchemy import text
+    async with engine.begin() as conn:
+        exists = await conn.scalar(text(
+            "select 1 from information_schema.columns "
+            "where table_schema = current_schema() and table_name = 'products' and column_name = 'stock'"))
+        if exists:
+            return
+        await conn.execute(text("alter table products add column stock integer"))
+        await conn.execute(text(
+            "update products p set stock = case "
+            "when p.category = 'Services' then null "
+            "when p.status = 'active' then 1 "
+            "when p.status = 'reserved' and not exists (select 1 from deliveries d where d.product_id = p.id "
+            "and d.status in ('awaiting_seller','pending','ready_for_pickup','accepted','in_transit')) then 1 "
+            "else 0 end"))
+        await conn.execute(text(
+            "alter table products add constraint products_stock_check check (stock is null or stock >= 0)"))
