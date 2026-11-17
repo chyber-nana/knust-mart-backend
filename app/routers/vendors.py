@@ -17,6 +17,8 @@ BADGE_LABELS = {
     "verified_student": "Verified Student",
     "campus_legend": "Campus Legend",
     "trusted_vendor": "Trusted Vendor",
+    "sales_20": "20+ Sales",
+    "power_seller": "Power Seller",
 }
 
 class StoreIn(BaseModel):
@@ -77,13 +79,31 @@ async def public_badges(db: AsyncSession, user: User) -> list[str]:
     stored = set((await db.scalars(select(UserBadge.badge_key).where(UserBadge.user_id == user.id))).all())
     if user.is_verified_student:
         stored.add("verified_student")
+
     completed = select(func.count(Delivery.id)).join(Product, Product.id == Delivery.product_id).where(
         Product.seller_id == user.id, Delivery.status == "delivered"
     )
     count = await db.scalar(completed) or 0
-    average = await db.scalar(select(func.avg(Review.rating)).where(Review.vendor_id == user.id))
-    if count >= 5 and average is not None and float(average) >= 4.5:
-        stored.update(("top_rated", "trusted_vendor"))
+    if count >= 20:
+        stored.add("sales_20")
+    if count > 50:
+        stored.add("power_seller")
+
+    rating_row = (await db.execute(
+        select(func.avg(Review.rating), func.count(Review.id)).where(Review.vendor_id == user.id)
+    )).one()
+    average, review_count = rating_row[0], rating_row[1] or 0
+    if review_count >= 10 and average is not None and float(average) >= 4.8:
+        stored.add("top_rated")
+
+    open_disputes = await db.scalar(
+        select(func.count(Delivery.id)).join(Product, Product.id == Delivery.product_id).where(
+            Product.seller_id == user.id, Delivery.status == "disputed"
+        )
+    ) or 0
+    if count >= 5 and review_count >= 5 and average is not None and float(average) >= 4.5 and open_disputes == 0:
+        stored.add("trusted_vendor")
+
     responder_times = select(
         func.avg(func.extract("epoch", Delivery.seller_responded_at - Delivery.created_at) / 60)
     ).join(Product, Product.id == Delivery.product_id).where(
