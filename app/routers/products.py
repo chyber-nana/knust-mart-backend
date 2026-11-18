@@ -201,4 +201,25 @@ async def set_listing_status(
     db: AsyncSession = Depends(get_db),
 ):
     product = (await db.execute(
-        select
+        select(Product).where(Product.id == product_id).with_for_update()
+    )).scalar_one_or_none()  # <-- Added .scalar_one_or_none() and closed the parenthesis properly
+    
+    if product is None:
+        raise HTTPException(404, "Listing not found.")
+    if product.seller_id != user.id:
+        raise HTTPException(403, "You can only manage your own listings.")
+    active_order = await db.scalar(
+        select(Delivery.id)
+        .where(
+            Delivery.product_id == product.id,
+            Delivery.status.in_(("awaiting_seller", "pending", "ready_for_pickup", "accepted", "in_transit")),
+        )
+        .limit(1)
+    )
+    if active_order and data.status != "reserved":
+        raise HTTPException(409, "This listing has an active order and cannot be reopened or marked sold.")
+    if data.status == "active" and product.stock is not None and product.stock < 1:
+        raise HTTPException(409, "Add stock before reopening this listing.")
+    product.status = data.status
+    await db.commit()
+    return {"status": product.status}
