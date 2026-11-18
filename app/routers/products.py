@@ -60,7 +60,11 @@ async def meta():
 async def browse(q: str | None = None, category: str | None = None, condition: str | None = None,
                  location: str | None = None, min_price: Decimal | None = None, max_price: Decimal | None = None,
                  sellers: str = "all", db: AsyncSession = Depends(get_db)):
-    stmt = select(Product, User).join(User, User.id == Product.seller_id).where(Product.status == "active", User.is_banned.is_(False))
+    stmt = select(Product, User).join(User, User.id == Product.seller_id).where(
+        Product.status == "active",
+        User.is_banned.is_(False),
+        User.store_suspended_at.is_(None),
+    )
     if q: stmt = stmt.where(Product.title.ilike(f"%{q}%"))
     if category: stmt = stmt.where(Product.category == category)
     if condition: stmt = stmt.where(Product.condition == condition)
@@ -75,7 +79,7 @@ async def browse(q: str | None = None, category: str | None = None, condition: s
 @router.get("/{product_id}")
 async def detail(product_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     row = (await db.execute(select(Product, User).join(User, User.id == Product.seller_id).where(Product.id == product_id))).first()
-    if not row or row[1].is_banned:
+    if not row or row[1].is_banned or row[1].store_suspended_at is not None:
         raise HTTPException(404, "Listing not found.")
     p, u = row
     imgs = (await images_for(db, [p.id])).get(p.id, [])
@@ -93,6 +97,8 @@ async def detail(product_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
 
 @router.post("", status_code=201)
 async def create(data: ProductIn, user: User = Depends(get_verified_user), db: AsyncSession = Depends(get_db)):
+    if user.store_suspended_at is not None:
+        raise HTTPException(403, "This business is currently suspended.")
     if user.user_type == "external" and user.store_activated_at is None:
         raise HTTPException(403, "Create your business to start selling.")
     if data.category not in CATEGORIES:

@@ -250,7 +250,7 @@ async def login(data: LoginIn, request: Request, db: AsyncSession = Depends(get_
 async def me(user: User = Depends(current_user)):
     return {"id": str(user.id), "full_name": user.full_name, "user_type": user.user_type,
             "is_courier": user.is_courier, "is_verified_student": user.is_verified_student,
-            "is_admin": user.is_admin, "store_active": user.store_activated_at is not None,
+            "is_admin": user.is_admin, "store_active": user.store_live,
             "store_name": user.store_name, "phone_number": user.phone_number,
             "whatsapp_number": user.whatsapp_number,
             "hostel_or_business_address": user.hostel_or_business_address}

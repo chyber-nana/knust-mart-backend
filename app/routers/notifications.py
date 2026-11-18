@@ -1,14 +1,23 @@
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import get_db
 from ..models import Notification, User
+from ..realtime import user_event_stream
 from ..security import current_user
 
 router = APIRouter(prefix="/notifications", tags=["notifications"])
+
+
+@router.get("/stream")
+async def stream_notifications(
+    request: Request,
+    user: User = Depends(current_user),
+):
+    return await user_event_stream(request, user.id)
 
 
 @router.get("")

@@ -16,6 +16,8 @@ CREATE TABLE users (
   otp_expires_at TIMESTAMPTZ,
   is_courier BOOLEAN NOT NULL DEFAULT FALSE,
   is_banned BOOLEAN NOT NULL DEFAULT FALSE,
+  restriction VARCHAR(16) CHECK (restriction IS NULL OR restriction IN ('suspended', 'banned')),
+  store_suspended_at TIMESTAMPTZ,
   is_admin BOOLEAN NOT NULL DEFAULT FALSE,
   hostel_or_business_address TEXT,
   store_name TEXT,
@@ -45,6 +47,7 @@ CREATE TABLE products (
   condition TEXT,
   hall_location TEXT,
   status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'sold', 'reserved')),
+  stock INTEGER CHECK (stock IS NULL OR stock >= 0),
   is_promoted BOOLEAN NOT NULL DEFAULT FALSE,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );

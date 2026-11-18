@@ -45,4 +45,4 @@ async def verify_payment(reference: str, user: User = Depends(current_user), db:
         if data.get("status") == "success":
             await apply_successful_charge(db, payment, data)
         await db.commit()
-    return {"status": payment.status, "store_active": user.store_activated_at is not None}
+    return {"status": payment.status, "store_active": user.store_live}

@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, model_validator
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..billing import (
@@ -10,9 +11,10 @@ from ..billing import (
     paystack_initialize, store_fee_pesewas,
 )
 from ..db import get_db
-from ..models import Payment, User
+from ..models import Delivery, Payment, Product, User
 from ..notifications import add_notification
 from ..security import get_verified_user
+from ..stock import ACTIVE_ORDER
 from ..terms import TERMS_VERSION
 
 router = APIRouter(prefix="/stores", tags=["stores"])
@@ -36,7 +38,7 @@ class ActivateIn(BaseModel):
 @router.get("/activation")
 async def activation_status(user: User = Depends(get_verified_user), db: AsyncSession = Depends(get_db)):
     return {
-        "active": user.store_activated_at is not None,
+        "active": user.store_live,
         "activation_type": user.store_activation_type,
         "free_slots_left": await free_slots_left(db),
         "fee": store_fee_pesewas(user.user_type) / 100,
@@ -93,3 +95,33 @@ async def activate_store(data: ActivateIn, user: User = Depends(get_verified_use
         "amount": amount / 100,
         "currency": CURRENCY,
     }
+
+
+@router.delete("/me")
+async def delete_business(user: User = Depends(get_verified_user), db: AsyncSession = Depends(get_db)):
+    if user.store_activated_at is None:
+        raise HTTPException(404, "You do not have a business account to delete.")
+    pending = await db.scalar(
+        select(func.count(Delivery.id))
+        .join(Product, Product.id == Delivery.product_id)
+        .where(Product.seller_id == user.id, Delivery.status.in_(ACTIVE_ORDER))
+    )
+    if pending:
+        raise HTTPException(
+            409,
+            "You cannot delete your business while you have a pending order. Complete or resolve those orders first.",
+        )
+    await db.execute(
+        update(Product)
+        .where(Product.seller_id == user.id, Product.status == "active")
+        .values(status="sold")
+    )
+    user.store_activated_at = None
+    user.store_activation_type = None
+    user.store_suspended_at = None
+    user.store_name = None
+    user.store_bio = None
+    user.logo_url = None
+    user.banner_url = None
+    await db.commit()
+    return {"deleted": True}

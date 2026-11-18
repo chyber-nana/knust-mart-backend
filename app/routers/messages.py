@@ -208,3 +208,25 @@ async def send_message(
     await db.commit()
     await db.refresh(message)
     return message_view(message)
+
+
+@router.post("/{product_id}/{counterpart_id}/read")
+async def mark_thread_read(
+    product_id: uuid.UUID,
+    counterpart_id: uuid.UUID,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Called by an open chat when a live message arrives, so unread counts stay accurate."""
+    await db.execute(
+        update(ChatMessage)
+        .where(
+            ChatMessage.product_id == product_id,
+            ChatMessage.sender_id == counterpart_id,
+            ChatMessage.receiver_id == user.id,
+            ChatMessage.read_at.is_(None),
+        )
+        .values(read_at=datetime.now(timezone.utc))
+    )
+    await db.commit()
+    return {"ok": True}

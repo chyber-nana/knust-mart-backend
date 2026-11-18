@@ -155,6 +155,7 @@ async def discover_vendors(
             User.is_banned.is_(False),
             User.is_email_verified.is_(True),
             User.store_activated_at.is_not(None),
+            User.store_suspended_at.is_(None),
         )
         .order_by(
             score.desc(),
@@ -185,7 +186,7 @@ async def discover_vendors(
 @router.get("/{vendor_id}")
 async def storefront(vendor_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     u = await db.get(User, vendor_id)
-    if not u or u.is_banned or not u.is_email_verified:
+    if not u or u.is_banned or not u.is_email_verified or u.store_suspended_at is not None:
         raise HTTPException(404, "Store not found.")
     avg, n = (await db.execute(select(func.avg(Review.rating), func.count(Review.id)).where(Review.vendor_id == u.id))).one()
     reviews = (await db.execute(

@@ -49,7 +49,7 @@ async def ban_courier(db: AsyncSession, courier_id, reason: str) -> None:
     c = await db.get(User, courier_id)
     if not c or c.is_banned:
         return
-    c.is_banned, c.is_courier = True, False
+    c.is_banned, c.is_courier, c.restriction = True, False, "suspended"
     send_email(c.email, "Your KNUST Mart account is suspended",
                f"Your account was suspended and courier access revoked. Reason: {reason}. Contact support to appeal.")
 

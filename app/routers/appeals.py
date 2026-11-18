@@ -42,6 +42,8 @@ async def create_appeal(
     user: User = Depends(appeal_user),
     db: AsyncSession = Depends(get_db),
 ):
+    if user.restriction == "banned":
+        raise HTTPException(403, "This account was banned and cannot be restored through appeals.")
     appeal = Appeal(user_id=user.id, message=data.message.strip())
     db.add(appeal)
     try:
@@ -113,6 +115,7 @@ async def review_appeal(
     appeal.rejection_reason = data.rejection_reason.strip() if data.rejection_reason else None
     if data.status == "approved":
         user.is_banned = False
+        user.restriction = None
         user.is_courier = False
     await db.commit()
 

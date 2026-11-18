@@ -18,6 +18,10 @@ class User(Base):
         CheckConstraint("logo_position_x BETWEEN 0 AND 100", name="users_logo_position_x_check"),
         CheckConstraint("logo_position_y BETWEEN 0 AND 100", name="users_logo_position_y_check"),
         CheckConstraint("banner_position_x BETWEEN 0 AND 100", name="users_banner_position_x_check"),
+        CheckConstraint(
+            "restriction IS NULL OR restriction IN ('suspended', 'banned')",
+            name="users_restriction_check",
+        ),
     )
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     full_name: Mapped[str] = mapped_column(Text, nullable=False)
@@ -36,6 +40,7 @@ class User(Base):
     business_terms_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
     is_courier: Mapped[bool] = mapped_column(default=False, server_default="false", nullable=False)
     is_banned: Mapped[bool] = mapped_column(default=False, server_default="false", nullable=False)
+    restriction: Mapped[str | None] = mapped_column(String(16), nullable=True)
     is_admin: Mapped[bool] = mapped_column(default=False, server_default="false", nullable=False)
     hostel_or_business_address: Mapped[str | None] = mapped_column(Text)
     store_name: Mapped[str | None] = mapped_column(Text)
@@ -50,7 +55,12 @@ class User(Base):
     banner_position_y: Mapped[int] = mapped_column(default=50, server_default="50", nullable=False)
     store_activated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     store_activation_type: Mapped[str | None] = mapped_column(Text, nullable=True, index=True)
+    store_suspended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    @property
+    def store_live(self) -> bool:
+        return self.store_activated_at is not None and self.store_suspended_at is None
 
 class EmailVerification(Base):
     __tablename__ = "email_verifications"
