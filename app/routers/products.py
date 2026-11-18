@@ -116,11 +116,17 @@ async def create(data: ProductIn, user: User = Depends(get_verified_user), db: A
         raise HTTPException(422, "Enter how many units you have in stock.")
     if not all(is_uploaded_image_url(url) for url in data.image_urls):
         raise HTTPException(422, "Upload images through the app first.")
-    p = Product(seller_id=user.id, title=data.title.strip(), description=data.description, price=data.price,
-                category=data.category,
-                condition=None if is_service else data.condition,
-                else location,
-                stock=None if is_service else data.stock)
+    
+    p = Product(
+        seller_id=user.id, 
+        title=data.title.strip(), 
+        description=data.description, 
+        price=data.price,
+        category=data.category,
+        condition=None if is_service else data.condition,
+        hall_location=None if is_service else location,
+        stock=None if is_service else data.stock
+    )
     db.add(p)
     await db.flush()
     db.add_all(ProductImage(product_id=p.id, image_url=u) for u in data.image_urls)
@@ -195,86 +201,4 @@ async def set_listing_status(
     db: AsyncSession = Depends(get_db),
 ):
     product = (await db.execute(
-        select(Product).where(Product.id == product_id).with_for_update()
-    )).scalar_one_or_none()
-    if product is None:
-        raise HTTPException(404, "Listing not found.")
-    if product.seller_id != user.id:
-        raise HTTPException(403, "You can only manage your own listings.")
-    active_order = await db.scalar(
-        select(Delivery.id)
-        .where(
-            Delivery.product_id == product.id,
-            Delivery.status.in_(("awaiting_seller", "pending", "ready_for_pickup", "accepted", "in_transit")),
-        )
-        .limit(1)
-    )
-    if active_order and data.status != "reserved":
-        raise HTTPException(409, "This listing has an active order and cannot be reopened or marked sold.")
-    if data.status == "active" and product.stock is not None and product.stock < 1:
-        raise HTTPException(409, "Add stock before reopening this listing.")
-    product.status = data.status
-    await db.commit()
-    return {"status": product.status}
-
-
-@router.delete("/{product_id}", status_code=204)
-async def delete_listing(
-    product_id: uuid.UUID,
-    user: User = Depends(get_verified_user),
-    db: AsyncSession = Depends(get_db),
-):
-    product = await owned_product(product_id, user, db)
-    activity = await db.scalar(
-        select(
-            select(Delivery.id).where(Delivery.product_id == product.id).exists()
-            | select(ChatMessage.id).where(ChatMessage.product_id == product.id).exists()
-            | select(Review.id).join(Delivery, Review.delivery_id == Delivery.id).where(Delivery.product_id == product.id).exists()
-        )
-    )
-    if activity:
-        raise HTTPException(409, "Listings with delivery, chat, or review history cannot be deleted.")
-    await db.delete(product)
-    await db.commit()
-    return None
-
-
-@router.post("/{product_id}/promote")
-async def promote_listing(
-    product_id: uuid.UUID,
-    user: User = Depends(get_verified_user),
-    db: AsyncSession = Depends(get_db),
-):
-    product = await owned_product(product_id, user, db)
-    if product.status == "sold":
-        raise HTTPException(409, "Sold listings cannot be promoted.")
-        if product.is_promoted:
-        raise HTTPException(409, "This listing is already promoted.")
-    amount = promotion_fee_pesewas()
-    if amount <= 0:  # PROMOTION_FEE_GHS=0 makes promotions free
-        product.is_promoted = True
-        await db.commit()
-        return {"status": "promoted", "is_promoted": True}
-    frontend_url = os.environ.get("FRONTEND_URL")
-    if not frontend_url:
-        raise HTTPException(503, "Payments are not available right now.")
-    reference = new_reference()
-    checkout = await paystack_initialize(
-        email=user.email,
-        amount=amount,
-        reference=reference,
-        callback_url=f"{frontend_url.rstrip('/')}/store/activated?reference={reference}&purpose=promotion&product={product.id}",
-        metadata={"user_id": str(user.id), "purpose": PURPOSE_PROMOTION, "product_id": str(product.id)},
-    )
-    db.add(Payment(
-        user_id=user.id, purpose=PURPOSE_PROMOTION, product_id=product.id, reference=reference,
-        amount_pesewas=amount, currency=CURRENCY, status="pending",
-    ))
-    await db.commit()
-    return {
-        "status": "payment_required",
-        "authorization_url": checkout["authorization_url"],
-        "reference": reference,
-        "amount": amount / 100,
-        "currency": CURRENCY,
-    }
+        select
