@@ -23,6 +23,7 @@ router = APIRouter(prefix="/stores", tags=["stores"])
 class ActivateIn(BaseModel):
     store_name: str = Field(min_length=2, max_length=80)
     hostel_or_business_address: str | None = Field(default=None, max_length=120)
+    phone_number: str = Field(max_length=32, pattern=r"^\+?[0-9][0-9 ()-]{5,30}$")
     business_terms_accepted: bool
     business_terms_version: str = Field(min_length=1, max_length=32)
 
@@ -55,6 +56,7 @@ async def activate_store(data: ActivateIn, user: User = Depends(get_verified_use
     if len(name) < 2:
         raise HTTPException(422, "Enter a business name.")
     user.store_name = name
+    user.phone_number = data.phone_number.strip()
     user.business_terms_accepted_at = datetime.now(timezone.utc)
     user.business_terms_version = TERMS_VERSION
     if data.hostel_or_business_address is not None:

@@ -61,12 +61,13 @@ async def update_contacts(
     user: User = Depends(current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    user.phone_number = data.phone_number.strip() or None if data.phone_number is not None else None
-    user.whatsapp_number = data.whatsapp_number.strip() or None if data.whatsapp_number is not None else None
-    user.hostel_or_business_address = (
-        data.hostel_or_business_address.strip() or None
-        if data.hostel_or_business_address is not None else None
-    )
+    sent = data.model_fields_set  # only touch fields the client actually sent
+    if "phone_number" in sent:
+        user.phone_number = (data.phone_number or "").strip() or None
+    if "whatsapp_number" in sent:
+        user.whatsapp_number = (data.whatsapp_number or "").strip() or None
+    if "hostel_or_business_address" in sent:
+        user.hostel_or_business_address = (data.hostel_or_business_address or "").strip() or None
     await db.commit()
     return {
         "phone_number": user.phone_number,
