@@ -15,19 +15,10 @@ from ..models import CourierPayout, Delivery, Product, Review, User
 from ..stock import complete_unit, release_unit, take_unit
 from ..notifications import add_notification
 from ..security import current_user
+from ..catalog import clean_location
 
 router = APIRouter(prefix="/deliveries", tags=["deliveries"])
-HALLS = {
-    "Unity",
-    "Independence",
-    "Evandy",
-    "Republic",
-    "Queen Elizabeth II",
-    "Africa",
-    "Off-Campus Commercial Hub",
-    "Main Library",
-    "Student Union Building",
-}
+
 
 class DeliveryIn(BaseModel):
     product_id: uuid.UUID
@@ -76,8 +67,10 @@ async def toggle_courier(user: User = Depends(current_user), db: AsyncSession = 
 
 @router.post("", status_code=201)
 async def request_delivery(data: DeliveryIn, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
-    if data.fulfillment_type == "courier" and data.dropoff_location not in HALLS:
-        raise HTTPException(422, "Choose a listed hall or hub for delivery.")
+        if data.fulfillment_type == "courier":
+        data.dropoff_location = clean_location(data.dropoff_location)
+        if not data.dropoff_location:
+            raise HTTPException(422, "Choose or type a delivery location.")
     result = await db.execute(
         select(Product).where(Product.id == data.product_id).with_for_update()
     )

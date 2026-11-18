@@ -280,6 +280,7 @@ class Payment(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
     purpose: Mapped[str] = mapped_column(Text, nullable=False)
+    product_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("products.id", ondelete="SET NULL"), nullable=True)
     reference: Mapped[str] = mapped_column(Text, nullable=False)
     amount_pesewas: Mapped[int] = mapped_column(nullable=False)
     currency: Mapped[str] = mapped_column(String(3), default="GHS", server_default="GHS", nullable=False)

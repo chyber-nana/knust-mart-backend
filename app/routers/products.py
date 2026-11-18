@@ -1,12 +1,14 @@
+import os
 import uuid
 from decimal import Decimal
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from ..catalog import CATEGORIES, CONDITIONS, DELIVERY_FEE, FEES, LOCATIONS
+from ..catalog import CAMPUS_PLACES, CATEGORIES, CONDITIONS, DELIVERY_FEE, FEES, LOCATIONS, OFF_CAMPUS, clean_location
 from ..db import get_db
-from ..models import ChatMessage, Delivery, Product, ProductImage, Review, User
+from ..billing import CURRENCY, PURPOSE_PROMOTION, new_reference, paystack_initialize, promotion_fee_pesewas
+from ..models import ChatMessage, Delivery, Payment, Product, ProductImage, Review, User
 from ..security import get_verified_user
 from ..stock import sync_after_stock_edit
 from .uploads import is_uploaded_image_url
@@ -54,7 +56,7 @@ def card(p: Product, u: User, imgs: list[str]) -> dict:
 
 @router.get("/meta")
 async def meta():
-    return {"categories": CATEGORIES, "conditions": CONDITIONS, "locations": LOCATIONS, "fees": FEES, "delivery_fee": DELIVERY_FEE}
+    return {"categories": CATEGORIES, "conditions": CONDITIONS, "locations": LOCATIONS, "fees": {t: {**v, "promotion": promotion_fee_pesewas() / 100} for t, v in FEES.items()}, "delivery_fee": DELIVERY_FEE}
 
 @router.get("")
 async def browse(q: str | None = None, category: str | None = None, condition: str | None = None,
@@ -68,7 +70,10 @@ async def browse(q: str | None = None, category: str | None = None, condition: s
     if q: stmt = stmt.where(Product.title.ilike(f"%{q}%"))
     if category: stmt = stmt.where(Product.category == category)
     if condition: stmt = stmt.where(Product.condition == condition)
-    if location: stmt = stmt.where(Product.hall_location == location)
+        if location == OFF_CAMPUS:
+        stmt = stmt.where(Product.hall_location.is_not(None), Product.hall_location.not_in(CAMPUS_PLACES))
+    elif location:
+        stmt = stmt.where(Product.hall_location == location)
     if min_price is not None: stmt = stmt.where(Product.price >= min_price)
     if max_price is not None: stmt = stmt.where(Product.price <= max_price)
     if sellers == "student": stmt = stmt.where(User.user_type == "student")
@@ -104,8 +109,9 @@ async def create(data: ProductIn, user: User = Depends(get_verified_user), db: A
     if data.category not in CATEGORIES:
         raise HTTPException(422, "Choose a listed category.")
     is_service = data.category == "Services"
-    if not is_service and (data.condition not in CONDITIONS or data.hall_location not in LOCATIONS):
-        raise HTTPException(422, "Items need a listed condition and location.")
+    location = clean_location(data.hall_location)
+    if not is_service and (data.condition not in CONDITIONS or not location):
+        raise HTTPException(422, "Items need a listed condition and a location.")
     if not is_service and (data.stock is None or data.stock < 1):
         raise HTTPException(422, "Enter how many units you have in stock.")
     if not all(is_uploaded_image_url(url) for url in data.image_urls):
@@ -113,7 +119,7 @@ async def create(data: ProductIn, user: User = Depends(get_verified_user), db: A
     p = Product(seller_id=user.id, title=data.title.strip(), description=data.description, price=data.price,
                 category=data.category,
                 condition=None if is_service else data.condition,
-                hall_location=None if is_service else data.hall_location,
+                else location,
                 stock=None if is_service else data.stock)
     db.add(p)
     await db.flush()
@@ -149,8 +155,8 @@ async def edit_listing(
         raise HTTPException(422, "Choose a listed category.")
     if "condition" in changes and changes["condition"] is not None and changes["condition"] not in CONDITIONS:
         raise HTTPException(422, "Choose a listed condition.")
-    if "hall_location" in changes and changes["hall_location"] is not None and changes["hall_location"] not in LOCATIONS:
-        raise HTTPException(422, "Choose a listed location.")
+    if "hall_location" in changes and changes["hall_location"] is not None:
+        changes["hall_location"] = clean_location(changes["hall_location"])
     category = changes.get("category", product.category)
     if category not in CATEGORIES:
         raise HTTPException(422, "Choose a listed category.")
@@ -165,7 +171,7 @@ async def edit_listing(
         changes["stock"] = stock
         condition = changes.get("condition", product.condition)
         location = changes.get("hall_location", product.hall_location)
-        if condition not in CONDITIONS or location not in LOCATIONS:
+        if condition not in CONDITIONS or not location:
             raise HTTPException(422, "Items need a listed condition and location.")
     image_urls = changes.pop("image_urls", None)
     if image_urls is not None:
@@ -242,13 +248,33 @@ async def promote_listing(
     product = await owned_product(product_id, user, db)
     if product.status == "sold":
         raise HTTPException(409, "Sold listings cannot be promoted.")
-    fee = FEES[user.user_type]["promotion"]
-    product.is_promoted = True
+        if product.is_promoted:
+        raise HTTPException(409, "This listing is already promoted.")
+    amount = promotion_fee_pesewas()
+    if amount <= 0:  # PROMOTION_FEE_GHS=0 makes promotions free
+        product.is_promoted = True
+        await db.commit()
+        return {"status": "promoted", "is_promoted": True}
+    frontend_url = os.environ.get("FRONTEND_URL")
+    if not frontend_url:
+        raise HTTPException(503, "Payments are not available right now.")
+    reference = new_reference()
+    checkout = await paystack_initialize(
+        email=user.email,
+        amount=amount,
+        reference=reference,
+        callback_url=f"{frontend_url.rstrip('/')}/store/activated?reference={reference}&purpose=promotion&product={product.id}",
+        metadata={"user_id": str(user.id), "purpose": PURPOSE_PROMOTION, "product_id": str(product.id)},
+    )
+    db.add(Payment(
+        user_id=user.id, purpose=PURPOSE_PROMOTION, product_id=product.id, reference=reference,
+        amount_pesewas=amount, currency=CURRENCY, status="pending",
+    ))
     await db.commit()
     return {
-        "is_promoted": product.is_promoted,
-        "fee": fee,
-        "currency": "GHS",
-        "payment_status": "stubbed",
-        "detail": "Promotion fee is displayed for transparency; payment is not connected.",
+        "status": "payment_required",
+        "authorization_url": checkout["authorization_url"],
+        "reference": reference,
+        "amount": amount / 100,
+        "currency": CURRENCY,
     }

@@ -48,6 +48,15 @@ async def _ensure_schema() -> None:
     from .stock import ensure_stock_column
     await ensure_stock_column(engine)
     await _ensure_moderation_columns(engine)
+    await _ensure_promotion_support(engine)
+
+async def _ensure_promotion_support(engine) -> None:
+    from sqlalchemy import text
+    async with engine.begin() as conn:
+        await conn.execute(text(
+            "alter table payments add column if not exists product_id uuid references products(id) on delete set null"))
+        await conn.execute(text(
+            "update products set hall_location = 'Queens' where hall_location = 'Queen Elizabeth II'"))
 
 
 async def _ensure_moderation_columns(engine) -> None:

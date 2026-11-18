@@ -19,12 +19,13 @@ from fastapi import HTTPException
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .models import Payment, User
+from .models import Payment, Product, User
 from .notifications import add_notification
 
 PAYSTACK_API = "https://api.paystack.co"
 CURRENCY = "GHS"
 PURPOSE_STORE = "store_activation"
+PURPOSE_PROMOTION = "listing_promotion"
 _SLOT_LOCK_KEY = 726_001  # app-wide advisory lock id used when claiming a free slot
 
 
@@ -49,6 +50,12 @@ def store_fee_pesewas(user_type: str) -> int:
 def paystack_secret() -> str | None:
     return os.environ.get("PAYSTACK_SECRET_KEY") or None
 
+def promotion_fee_pesewas() -> int:
+    try:
+        fee = Decimal(os.environ.get("PROMOTION_FEE_GHS", "5"))
+    except InvalidOperation:
+        fee = Decimal("5")
+    return max(0, int((fee * 100).to_integral_value()))
 
 def new_reference() -> str:
     return f"kmart_{uuid.uuid4().hex}"
@@ -151,7 +158,16 @@ async def apply_successful_charge(db: AsyncSession, payment: Payment, data: dict
     payment.status = "success"
     payment.paid_at = now
     user = await db.get(User, payment.user_id)
-    if user is not None and user.store_activated_at is None:
+    if payment.purpose == PURPOSE_PROMOTION:
+        product = await db.get(Product, payment.product_id) if payment.product_id else None
+        if product is not None:
+            product.is_promoted = True
+            add_notification(
+                db, payment.user_id, "listing_promoted", "Your listing is promoted",
+                f"Payment received. “{product.title}” now appears at the top of the marketplace.",
+                f"/products/{product.id}",
+            )
+    elif user is not None and user.store_activated_at is None:
         user.store_activated_at = now
         user.store_activation_type = "paid"
         add_notification(
