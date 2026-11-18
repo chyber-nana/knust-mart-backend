@@ -70,7 +70,7 @@ async def browse(q: str | None = None, category: str | None = None, condition: s
     if q: stmt = stmt.where(Product.title.ilike(f"%{q}%"))
     if category: stmt = stmt.where(Product.category == category)
     if condition: stmt = stmt.where(Product.condition == condition)
-        if location == OFF_CAMPUS:
+    if location == OFF_CAMPUS:
         stmt = stmt.where(Product.hall_location.is_not(None), Product.hall_location.not_in(CAMPUS_PLACES))
     elif location:
         stmt = stmt.where(Product.hall_location == location)
