@@ -2,9 +2,36 @@ import os
 import re
 import httpx
 
+def _deliver(to: str, subject: str, text_body: str, html_body: str) -> None:
+    key = os.environ.get("BREVO_API_KEY")
+    raw_sender = os.environ.get("MAIL_FROM", "messenger@knustmart.site")
+    if "<" in raw_sender and ">" in raw_sender:
+        sender_email = raw_sender.split("<")[1].split(">")[0].strip()
+        sender_name = raw_sender.split("<")[0].strip() or "KNUST Mart"
+    else:
+        sender_email, sender_name = raw_sender.strip(), "KNUST Mart"
+    if not key:
+        print(f"[mail simulation] to={to} subject={subject}\n{text_body}")
+        return
+    response = httpx.post(
+        "https://api.brevo.com/v3/smtp/email",
+        headers={"api-key": key, "content-type": "application/json", "accept": "application/json"},
+        json={"sender": {"email": sender_email, "name": sender_name}, "to": [{"email": to}],
+              "subject": subject, "textContent": text_body, "htmlContent": html_body},
+        timeout=10.0,
+    )
+    if response.status_code >= 400:
+        print(f"BREVO API ERROR [{response.status_code}]: {response.text}")
+    response.raise_for_status()
+
+
 def send_email(to: str, subject: str, body: str, html_body: str | None = None) -> None:
-    # Fallback compatibility wrapper
-    send_verification_email(to=to, verify_url=body, user_name="Student")
+    # Link emails keep the branded verification template. Everything else (e.g. the
+    # 6-digit code) is sent exactly as written, with its own subject and body.
+    if re.search(r'https?://[^\s<>"]+', body):
+        send_verification_email(to=to, verify_url=body, user_name="Student")
+        return
+    _deliver(to, subject, body, html_body or f"<p>{body}</p>")
 
 def send_verification_email(to: str, verify_url: str, user_name: str = "Student") -> None:
     key = os.environ.get("BREVO_API_KEY")
