@@ -67,7 +67,7 @@ async def toggle_courier(user: User = Depends(current_user), db: AsyncSession = 
 
 @router.post("", status_code=201)
 async def request_delivery(data: DeliveryIn, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
-        if data.fulfillment_type == "courier":
+    if data.fulfillment_type == "courier":
         data.dropoff_location = clean_location(data.dropoff_location)
         if not data.dropoff_location:
             raise HTTPException(422, "Choose or type a delivery location.")
