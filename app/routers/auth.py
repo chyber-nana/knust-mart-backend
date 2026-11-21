@@ -110,8 +110,18 @@ async def issue_email_link(db: AsyncSession, email: str) -> None:
 @router.post("/register", status_code=201)
 async def register(data: RegisterIn, db: AsyncSession = Depends(get_db)):
     email = data.email.lower()
-    if (await db.execute(select(User).where(User.email == email))).scalar_one_or_none():
+    existing = (await db.execute(select(User).where(User.email == email))).scalar_one_or_none()
+    if existing and existing.is_email_verified:
         raise HTTPException(409, "An account with this email already exists.")
+    if existing:
+        # Never verified, so nobody has proven they own this address. Let the sign-up be retried
+        # (a typo'd or abandoned attempt must not lock the real owner out); a code is still required.
+        existing.full_name, existing.password_hash = data.full_name, pwd.hash(data.password)
+        existing.user_type = data.account_type
+        existing.terms_accepted_at, existing.terms_version = datetime.now(timezone.utc), TERMS_VERSION
+        await db.commit()
+        await (issue_otp if data.account_type == "student" else issue_email_link)(db, email)
+        return {"detail": "Verification instructions sent."}
     await db.execute(text("SELECT pg_advisory_xact_lock(70631742)"))
     user = User(full_name=data.full_name, email=email, password_hash=pwd.hash(data.password),
                 user_type=data.account_type, hostel_or_business_address=data.hostel_or_business_address,
@@ -211,6 +221,31 @@ async def verify_link(data: VerifyLinkIn, db: AsyncSession = Depends(get_db)):
     await db.delete(rec)
     await db.commit()
     return {"access_token": make_token(user.email), "user_type": user.user_type}
+
+
+class ChangeEmailIn(BaseModel):
+    email: EmailStr
+    password: str
+    new_email: EmailStr
+
+
+@router.post("/change-email")
+async def change_email(data: ChangeEmailIn, request: Request, db: AsyncSession = Depends(get_db)):
+    """Fix a mistyped address on an account that has not been verified yet."""
+    old, new = data.email.lower(), data.new_email.lower()
+    await enforce_rate_limit(db, "change_email", rate_limit_subjects(request, old), 5, 60 * 60)
+    user = (await db.execute(select(User).where(User.email == old))).scalar_one_or_none()
+    if user is None or user.is_email_verified or not pwd.verify(data.password, user.password_hash):
+        raise HTTPException(400, "We couldn't change that email. Check your password, or register again.")
+    if old != new and (await db.execute(select(User.id).where(User.email == new))).first():
+        raise HTTPException(409, "An account with that email already exists.")
+    allowed = ("@st.knust.edu.gh", "@idl.knust.edu.gh")
+    is_student = new.endswith(allowed)
+    await db.execute(delete(EmailVerification).where(EmailVerification.email == old))
+    user.email, user.user_type = new, "student" if is_student else "external"
+    await db.commit()
+    await (issue_otp if is_student else issue_email_link)(db, new)
+    return {"detail": "Verification instructions sent.", "email": new, "account_type": user.user_type}
 
 
 @router.post("/resend")
