@@ -219,6 +219,22 @@ class Delivery(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class DeliveryOffer(Base):
+    __tablename__ = "delivery_offers"
+    __table_args__ = (
+        CheckConstraint("price > 0", name="delivery_offers_price_check"),
+        CheckConstraint("status IN ('open', 'chosen', 'rejected', 'withdrawn')", name="delivery_offers_status_check"),
+        UniqueConstraint("delivery_id", "courier_id", name="delivery_offers_delivery_courier_key"),
+    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    delivery_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("deliveries.id", ondelete="CASCADE"), index=True, nullable=False)
+    courier_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), index=True, nullable=False)
+    price: Mapped[Decimal] = mapped_column(Numeric(8, 2), nullable=False)
+    status: Mapped[str] = mapped_column(Text, default="open", server_default="open", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
 class AuthRateLimit(Base):
     __tablename__ = "auth_rate_limits"
     __table_args__ = (

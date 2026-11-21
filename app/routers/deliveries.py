@@ -13,10 +13,12 @@ from ..billing import (
     CURRENCY, PURPOSE_COURIER, claim_free_courier_slot, courier_fee_pesewas, courier_slots_left,
     new_reference, paystack_initialize,
 )
-from ..catalog import DELIVERY_FEE
+from ..catalog import (
+    DELIVERY_FEE, FIXED_ACCEPT_AFTER_MINUTES, MAX_OPEN_OFFERS, OFFER_MIN_STEP, OFFER_TTL_MINUTES, courier_price_range,
+)
 from ..db import get_db
 from ..mailer import send_email
-from ..models import CourierPayout, Delivery, Payment, Product, Review, User
+from ..models import CourierPayout, Delivery, DeliveryOffer, Payment, Product, Review, User
 from ..stock import complete_unit, release_unit, take_unit
 from ..notifications import add_notification
 from ..security import current_user
@@ -35,6 +37,21 @@ class DeliveryIn(BaseModel):
 
 class SellerResponseIn(BaseModel):
     available: bool
+
+
+class OfferIn(BaseModel):
+    price: Decimal
+
+
+def _fresh_offer_cutoff() -> datetime:
+    return datetime.now(timezone.utc) - timedelta(minutes=OFFER_TTL_MINUTES)
+
+
+def _fixed_accept_open(d: Delivery, open_offers: int) -> bool:
+    """Fallback: after a quiet period with no offers, the old fixed-price first-come accept opens."""
+    if open_offers or d.courier_available_at is None:
+        return False
+    return datetime.now(timezone.utc) >= d.courier_available_at + timedelta(minutes=FIXED_ACCEPT_AFTER_MINUTES)
 
 
 class ScanIn(BaseModel):
@@ -149,6 +166,9 @@ async def request_delivery(data: DeliveryIn, user: User = Depends(current_user),
         dropoff_location = pickup_location
     else:
         dropoff_location = data.dropoff_location
+
+    if data.fulfillment_type == "courier" and courier_price_range(pickup_location, dropoff_location) is None:
+        raise HTTPException(409, "Courier delivery is only available between on-campus halls and hostels. Choose pickup instead.")
 
     take_unit(product)
     d = Delivery(
@@ -331,14 +351,146 @@ async def job_board(pickup: str | None = None, dropoff: str | None = None,
     if pickup: q = q.where(Delivery.pickup_location == pickup)
     if dropoff: q = q.where(Delivery.dropoff_location == dropoff)
     rows = (await db.execute(q.order_by(Delivery.created_at))).all()
-    return [{
-        "id": str(r.id),
-        "pickup": r.pickup_location,
-        "dropoff": r.dropoff_location,
-        "fee": r.delivery_fee,
-        "available_at": r.courier_available_at.isoformat() if r.courier_available_at else None,
-        "product_title": product.title,
-    } for r, product in rows]
+    ids = [r.id for r, _ in rows]
+    offers = (await db.execute(select(DeliveryOffer).where(
+        DeliveryOffer.delivery_id.in_(ids), DeliveryOffer.status == "open",
+        DeliveryOffer.updated_at >= _fresh_offer_cutoff()))).scalars().all() if ids else []
+    out = []
+    for r, product in rows:
+        rng = courier_price_range(r.pickup_location, r.dropoff_location)
+        if rng is None:
+            continue
+        mine = next((o for o in offers if o.delivery_id == r.id and o.courier_id == user.id), None)
+        count = sum(1 for o in offers if o.delivery_id == r.id)
+        out.append({
+            "id": str(r.id),
+            "pickup": r.pickup_location,
+            "dropoff": r.dropoff_location,
+            "fee": r.delivery_fee,
+            "price_min": rng[0], "price_max": rng[1],
+            "my_offer": mine.price if mine else None,
+            "open_offers": count,
+            "fixed_accept_open": _fixed_accept_open(r, count),
+            "available_at": r.courier_available_at.isoformat() if r.courier_available_at else None,
+            "product_title": product.title,
+        })
+    return out
+
+
+@router.post("/{delivery_id}/offer")
+async def make_offer(delivery_id: str, data: OfferIn, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
+    """A courier offers to deliver at a price within the allowed range for the trip."""
+    d = await get_delivery(db, delivery_id)
+    if not user.is_courier or user.is_banned or d.status != "pending" or d.fulfillment_type != "courier" or d.buyer_id == user.id:
+        raise HTTPException(409, "You can't make an offer on this job.")
+    rng = courier_price_range(d.pickup_location, d.dropoff_location)
+    if rng is None:
+        raise HTTPException(409, "This trip is outside the courier service area.")
+    price = data.price
+    if price < Decimal(str(rng[0])) or price > Decimal(str(rng[1])):
+        raise HTTPException(422, f"Your price must be between GH₵{rng[0]:.0f} and GH₵{rng[1]:.0f} for this trip.")
+    if (price * 2) % 1 != 0:
+        raise HTTPException(422, f"Prices go up in steps of GH₵{OFFER_MIN_STEP:.2f}.")
+    active_jobs = await db.scalar(select(func.count(Delivery.id)).where(
+        Delivery.courier_id == user.id, Delivery.status.in_(("accepted", "in_transit"))))
+    if (active_jobs or 0) >= 3:
+        raise HTTPException(409, "Couriers can have at most 3 active deliveries.")
+    now = datetime.now(timezone.utc)
+    existing = (await db.execute(select(DeliveryOffer).where(
+        DeliveryOffer.delivery_id == d.id, DeliveryOffer.courier_id == user.id))).scalar_one_or_none()
+    open_count = await db.scalar(select(func.count(DeliveryOffer.id)).where(
+        DeliveryOffer.delivery_id == d.id, DeliveryOffer.status == "open", DeliveryOffer.updated_at >= _fresh_offer_cutoff()))
+    is_new = existing is None or existing.status != "open"
+    if is_new and (open_count or 0) >= MAX_OPEN_OFFERS:
+        raise HTTPException(409, "This request already has the maximum number of offers.")
+    if existing:
+        existing.price, existing.status, existing.updated_at = price, "open", now
+    else:
+        db.add(DeliveryOffer(delivery_id=d.id, courier_id=user.id, price=price, status="open", updated_at=now))
+    if is_new:
+        product = await db.get(Product, d.product_id)
+        add_notification(db, d.buyer_id, "courier_offer", "New courier offer",
+                         f"A courier offered to deliver {product.title if product else 'your order'}. Choose your courier.",
+                         "/orders")
+    await db.commit()
+    return {"status": "offered", "price": price}
+
+
+@router.delete("/{delivery_id}/offer")
+async def withdraw_offer(delivery_id: str, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
+    d = await get_delivery(db, delivery_id)
+    offer = (await db.execute(select(DeliveryOffer).where(
+        DeliveryOffer.delivery_id == d.id, DeliveryOffer.courier_id == user.id, DeliveryOffer.status == "open"))).scalar_one_or_none()
+    if offer is None:
+        raise HTTPException(404, "You have no open offer on this job.")
+    offer.status = "withdrawn"
+    await db.commit()
+    return {"status": "withdrawn"}
+
+
+@router.get("/{delivery_id}/offers")
+async def list_offers(delivery_id: str, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
+    """The buyer's view of courier offers. Shows who is offering, never contact details."""
+    try:
+        key = uuid.UUID(delivery_id)
+    except ValueError:
+        raise HTTPException(404, "Delivery not found.")
+    d = await db.get(Delivery, key)
+    if d is None or d.buyer_id != user.id:
+        raise HTTPException(404, "Delivery not found.")
+    if d.status != "pending":
+        return []
+    rows = (await db.execute(
+        select(DeliveryOffer, User).join(User, User.id == DeliveryOffer.courier_id).where(
+            DeliveryOffer.delivery_id == d.id, DeliveryOffer.status == "open",
+            DeliveryOffer.updated_at >= _fresh_offer_cutoff(), User.is_courier.is_(True), User.is_banned.is_(False),
+        ).order_by(func.random())  # no built-in ranking, so newer couriers aren't buried
+    )).all()
+    out = []
+    for offer, courier in rows:
+        done = await db.scalar(select(func.count(Delivery.id)).where(Delivery.courier_id == courier.id, Delivery.status == "delivered"))
+        out.append({"id": str(offer.id), "courier_name": courier.full_name.split(" ")[0], "price": offer.price,
+                    "completed": done or 0, "is_new": (done or 0) < 3, "verified_student": courier.is_verified_student})
+    return out
+
+
+@router.post("/{delivery_id}/offers/{offer_id}/choose")
+async def choose_offer(delivery_id: str, offer_id: str, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
+    d = await get_delivery(db, delivery_id)
+    if d.buyer_id != user.id or d.status != "pending":
+        raise HTTPException(409, "You can't choose a courier for this order right now.")
+    try:
+        oid = uuid.UUID(offer_id)
+    except ValueError:
+        raise HTTPException(404, "Offer not found.")
+    offer = (await db.execute(select(DeliveryOffer).where(DeliveryOffer.id == oid, DeliveryOffer.delivery_id == d.id).with_for_update())).scalar_one_or_none()
+    if offer is None or offer.status != "open" or offer.updated_at < _fresh_offer_cutoff():
+        raise HTTPException(409, "That offer is no longer available. Pick another courier.")
+    courier = await db.get(User, offer.courier_id)
+    if courier is None or not courier.is_courier or courier.is_banned:
+        raise HTTPException(409, "That courier is no longer available. Pick another courier.")
+    active_jobs = await db.scalar(select(func.count(Delivery.id)).where(
+        Delivery.courier_id == courier.id, Delivery.status.in_(("accepted", "in_transit"))))
+    if (active_jobs or 0) >= 3:
+        raise HTTPException(409, "That courier is busy right now. Pick another courier.")
+    d.courier_id, d.delivery_fee, d.status = courier.id, offer.price, "accepted"
+    offer.status = "chosen"
+    others = (await db.execute(select(DeliveryOffer).where(
+        DeliveryOffer.delivery_id == d.id, DeliveryOffer.id != offer.id, DeliveryOffer.status == "open"))).scalars().all()
+    product = await db.get(Product, d.product_id)
+    title = product.title if product else "an order"
+    for other in others:
+        other.status = "rejected"
+        add_notification(db, other.courier_id, "offer_not_chosen", "Another courier was chosen",
+                         f"The buyer picked a different courier for {title}.", "/courier")
+    add_notification(db, courier.id, "courier_chosen", "You were chosen!",
+                     f"The buyer chose you to deliver {title} for GH₵{offer.price:.2f}. Head to the pickup.", "/courier")
+    add_notification(db, d.buyer_id, "order_accepted", "Courier assigned",
+                     f"{courier.full_name.split(' ')[0]} will deliver {title} for GH₵{offer.price:.2f}. Pay them in person (cash or MoMo).",
+                     f"/orders/{d.id}")
+    await db.commit()
+    return {"status": d.status, "delivery_fee": d.delivery_fee}
+
 
 @router.get("/{delivery_id}/receipt")
 async def receipt(delivery_id: str, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
@@ -384,6 +536,10 @@ async def accept(delivery_id: str, user: User = Depends(current_user), db: Async
         raise HTTPException(409, "This job can't be accepted.")
     if d.courier_available_at and d.courier_available_at > datetime.now(timezone.utc):
         raise HTTPException(409, "Please wait for the 10-second acceptance cooldown.")
+    open_offers = await db.scalar(select(func.count(DeliveryOffer.id)).where(
+        DeliveryOffer.delivery_id == d.id, DeliveryOffer.status == "open", DeliveryOffer.updated_at >= _fresh_offer_cutoff()))
+    if not _fixed_accept_open(d, open_offers or 0):
+        raise HTTPException(409, "Send an offer with your price. The buyer picks a courier.")
     active_jobs = (await db.execute(
         select(func.count(Delivery.id)).where(
             Delivery.courier_id == user.id,

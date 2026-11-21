@@ -25,3 +25,19 @@ alter table users add constraint users_courier_activation_type_check
 update users set courier_activated_at = now(), courier_activation_type = 'legacy'
  where is_courier and courier_activated_at is null;
 commit;
+
+-- Courier offers (courier sets price, buyer chooses). Run once.
+begin;
+create table if not exists delivery_offers (
+  id uuid primary key,
+  delivery_id uuid not null references deliveries(id) on delete cascade,
+  courier_id uuid not null references users(id),
+  price numeric(8,2) not null check (price > 0),
+  status text not null default 'open' check (status in ('open', 'chosen', 'rejected', 'withdrawn')),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint delivery_offers_delivery_courier_key unique (delivery_id, courier_id)
+);
+create index if not exists ix_delivery_offers_delivery_id on delivery_offers (delivery_id);
+create index if not exists ix_delivery_offers_courier_id on delivery_offers (courier_id);
+commit;

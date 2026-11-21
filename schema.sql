@@ -159,3 +159,16 @@ CREATE TABLE courier_payouts (
   status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'paid', 'failed')),
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+CREATE TABLE delivery_offers (
+  id UUID PRIMARY KEY,
+  delivery_id UUID NOT NULL REFERENCES deliveries(id) ON DELETE CASCADE,
+  courier_id UUID NOT NULL REFERENCES users(id),
+  price NUMERIC(8,2) NOT NULL CHECK (price > 0),
+  status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'chosen', 'rejected', 'withdrawn')),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT delivery_offers_delivery_courier_key UNIQUE (delivery_id, courier_id)
+);
+CREATE INDEX ix_delivery_offers_delivery_id ON delivery_offers (delivery_id);
+CREATE INDEX ix_delivery_offers_courier_id ON delivery_offers (courier_id);
