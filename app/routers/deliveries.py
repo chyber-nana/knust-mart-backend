@@ -35,6 +35,7 @@ class DeliveryIn(BaseModel):
     delivery_fee: Decimal | None = None
     choose_courier: bool = False
     color: str | None = Field(default=None, max_length=20)
+    dropoff_note: str | None = Field(default=None, max_length=120)
     size: str | None = Field(default=None, max_length=20)
 
 
@@ -189,6 +190,7 @@ async def request_delivery(data: DeliveryIn, user: User = Depends(current_user),
     picked = " (" + " · ".join(x for x in (color, size) if x) + ")" if (color or size) else ""
     take_unit(product)
     d = Delivery(
+        dropoff_note=(data.dropoff_note or "").strip() or None if data.fulfillment_type == "courier" else None,
         chosen_color=color,
         chosen_size=size,
         product_id=product.id,
@@ -210,7 +212,7 @@ async def request_delivery(data: DeliveryIn, user: User = Depends(current_user),
         f"/orders/{d.id}",
     )
     add_notification(
-        db, product.seller_id, "order_requested", "New order",
+        db, product.seller_id, "order_requested", "New order: open it to confirm you have the item",
         f"A buyer requested delivery for {product.title}{picked}.",
         f"/orders/{d.id}",
     )
@@ -517,10 +519,13 @@ async def choose_offer(delivery_id: str, offer_id: str, user: User = Depends(cur
         add_notification(db, other.courier_id, "offer_not_chosen", "Another courier was chosen",
                          f"The buyer picked a different courier for {title}.", "/courier")
     add_notification(db, courier.id, "courier_chosen", "You were chosen!",
-                     f"The buyer chose you to deliver {title} for GH₵{offer.price:.2f}. Head to the pickup.", "/courier")
+                     f"The buyer chose you to deliver {title} for GH₵{offer.price:.2f}. Go to {d.pickup_location} and meet the seller. Open the job for their phone number.", "/courier")
     add_notification(db, d.buyer_id, "order_accepted", "Courier assigned",
                      f"{courier.full_name.split(' ')[0]} will deliver {title} for GH₵{offer.price:.2f}. Pay them in person (cash or MoMo).",
                      f"/orders/{d.id}")
+    if product:
+        add_notification(db, product.seller_id, "order_accepted", "Courier is coming to collect",
+                         f"{courier.full_name} is coming for {title}. When you hand it over, tap 'I handed it to the courier'.", f"/orders/{d.id}")
     await db.commit()
     return {"status": d.status, "delivery_fee": d.delivery_fee}
 
@@ -538,6 +543,7 @@ async def receipt(delivery_id: str, user: User = Depends(current_user), db: Asyn
     is_seller = product.seller_id == user.id
     if not is_buyer and not is_seller:
         raise HTTPException(403, "Only the buyer can view this receipt.")
+    courier = await db.get(User, d.courier_id) if d.courier_id else None
     reviewed = False
     if is_buyer and d.status == "delivered":
         reviewed = await db.scalar(
@@ -555,6 +561,10 @@ async def receipt(delivery_id: str, user: User = Depends(current_user), db: Asyn
         "pickup": d.pickup_location,
         "dropoff": d.dropoff_location,
         "fee": d.delivery_fee,
+        "released": d.seller_released_at is not None,
+        "dropoff_note": d.dropoff_note,
+        "courier_name": courier.full_name if courier else None,
+        "courier_phone": courier.phone_number if courier and d.status in ("accepted", "in_transit") else None,
         "buyer_id": str(d.buyer_id) if is_seller else None,
         "qr_token": d.delivery_qr_token if is_buyer and d.fulfillment_type == "courier" and d.status == "in_transit" else None,
         "pin_code": d.pin_code if is_buyer and d.fulfillment_type == "courier" and d.status == "in_transit" else None,
@@ -588,7 +598,12 @@ async def accept(delivery_id: str, user: User = Depends(current_user), db: Async
     if product:
         add_notification(
             db, d.buyer_id, "order_accepted", "Courier assigned",
-            f"A courier accepted your order for {product.title}.",
+            f"{courier.full_name} will collect {product.title} from the seller, then bring it to {d.dropoff_location}. Keep your phone on.",
+            f"/orders/{d.id}",
+        )
+        add_notification(
+            db, product.seller_id, "order_accepted", "Courier is coming to collect",
+            f"{courier.full_name} is coming for {product.title}. When you hand it over, tap 'I handed it to the courier'.",
             f"/orders/{d.id}",
         )
     await db.commit()
@@ -623,17 +638,49 @@ async def confirm_pickup(
     await db.commit()
     return {"status": d.status}
 
+@router.get("/active-count")
+async def active_count(user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
+    """Orders still in progress for this user (as buyer, seller or courier): drives the red dot on Orders."""
+    n = await db.scalar(
+        select(func.count(Delivery.id)).join(Product, Product.id == Delivery.product_id).where(
+            Delivery.status.in_(("awaiting_seller", "pending", "ready_for_pickup", "accepted", "in_transit")),
+            (Delivery.buyer_id == user.id) | (Delivery.courier_id == user.id) | (Product.seller_id == user.id),
+        )
+    )
+    return {"count": n or 0}
+
+
+@router.post("/{delivery_id}/release")
+async def release_to_courier(delivery_id: str, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
+    """Seller confirms the item was physically handed to the courier. The courier can only start the trip after this."""
+    d = await get_delivery(db, delivery_id)
+    product = await db.get(Product, d.product_id)
+    if product is None or product.seller_id != user.id or d.status != "accepted" or d.fulfillment_type != "courier":
+        raise HTTPException(409, "Nothing to hand over right now.")
+    if d.seller_released_at is None:
+        d.seller_released_at = datetime.now(timezone.utc)
+        add_notification(
+            db, d.courier_id, "order_released", "Seller confirmed handover",
+            f"The seller says {product.title} is in your hands. Tap 'I have it, start delivery' and head to {d.dropoff_location}.",
+            "/courier",
+        )
+    await db.commit()
+    return {"released": True}
+
+
 @router.post("/{delivery_id}/pickup")
 async def picked_up(delivery_id: str, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
     d = await get_delivery(db, delivery_id)
     if d.courier_id != user.id or d.status != "accepted":
         raise HTTPException(409, "Not your active job.")
+    if d.seller_released_at is None:
+        raise HTTPException(409, "Wait until the seller confirms they handed you the item.")
     d.status = "in_transit"
     product = await db.get(Product, d.product_id)
     if product:
         add_notification(
             db, d.buyer_id, "order_picked_up", "Order picked up",
-            f"Your order for {product.title} is on its way.",
+            f"{product.title} is with your courier and on its way to {d.dropoff_location}. Have your PIN ready and meet them there.",
             f"/orders/{d.id}",
         )
     await db.commit()
@@ -773,6 +820,13 @@ async def mine(user: User = Depends(current_user), db: AsyncSession = Depends(ge
         }
         if role == "buyer" and d.status == "delivered":
             item["reviewed"] = reviewed
+        item["released"] = d.seller_released_at is not None
+        item["dropoff_note"] = d.dropoff_note
+        if role == "courier" and d.status in ("accepted", "in_transit"):
+            item["seller_phone"] = vendor.phone_number
+            item["seller_name"] = vendor.store_name or vendor.full_name
+            item["buyer_name"] = order_buyer.full_name
+            item["buyer_phone"] = order_buyer.phone_number
         if role == "seller":
             item["buyer_id"] = str(order_buyer.id)
         result.append(item)

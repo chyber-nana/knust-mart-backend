@@ -68,3 +68,7 @@ alter table deliveries add column if not exists choose_courier boolean not null 
 -- Buyer's chosen colour/size on an order
 alter table deliveries add column if not exists chosen_color text;
 alter table deliveries add column if not exists chosen_size text;
+
+-- Seller handover confirmation + buyer's directions note
+alter table deliveries add column if not exists seller_released_at timestamptz;
+alter table deliveries add column if not exists dropoff_note text;
