@@ -8,10 +8,15 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.orm import aliased
 from sqlalchemy.ext.asyncio import AsyncSession
+import os
+from ..billing import (
+    CURRENCY, PURPOSE_COURIER, claim_free_courier_slot, courier_fee_pesewas, courier_slots_left,
+    new_reference, paystack_initialize,
+)
 from ..catalog import DELIVERY_FEE
 from ..db import get_db
 from ..mailer import send_email
-from ..models import CourierPayout, Delivery, Product, Review, User
+from ..models import CourierPayout, Delivery, Payment, Product, Review, User
 from ..stock import complete_unit, release_unit, take_unit
 from ..notifications import add_notification
 from ..security import current_user
@@ -61,9 +66,61 @@ async def get_delivery(db: AsyncSession, delivery_id: str) -> Delivery:
 async def toggle_courier(user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
     if not user.is_verified_student:
         raise HTTPException(403, "Only verified students can deliver.")
+    if not user.is_courier:
+        if user.is_banned:
+            raise HTTPException(403, "Your account is suspended.")
+        if user.courier_activated_at is None:
+            raise HTTPException(402, "Courier registration is required first.")
     user.is_courier = not user.is_courier
     await db.commit()
     return {"is_courier": user.is_courier}
+
+
+@router.get("/couriers/activation")
+async def courier_activation(user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
+    return {
+        "active": user.courier_activated_at is not None,
+        "activation_type": user.courier_activation_type,
+        "free_slots_left": await courier_slots_left(db),
+        "fee": courier_fee_pesewas() / 100,
+        "currency": CURRENCY,
+    }
+
+
+@router.post("/couriers/activate")
+async def activate_courier(user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
+    """Register as a courier: free for the first few couriers, otherwise a Paystack checkout."""
+    if not user.is_verified_student:
+        raise HTTPException(403, "Only verified students can deliver.")
+    if user.is_banned:
+        raise HTTPException(403, "Your account is suspended.")
+    if user.courier_activated_at is not None:
+        user.is_courier = True
+        await db.commit()
+        return {"status": "active", "activation_type": user.courier_activation_type}
+    if await claim_free_courier_slot(db, user):
+        add_notification(db, user.id, "courier_activated", "You're a KNUST Mart courier",
+                         "You got one of the free launch spots. Courier mode is on.", "/courier")
+        await db.commit()
+        return {"status": "active", "activation_type": "free_launch"}
+    await db.rollback()  # release the slot lock before calling Paystack
+    amount = courier_fee_pesewas()
+    if amount <= 0:
+        raise HTTPException(503, "Courier registration is not available right now.")
+    frontend_url = os.environ.get("FRONTEND_URL")
+    if not frontend_url:
+        raise HTTPException(503, "Payments are not available right now.")
+    reference = new_reference()
+    checkout = await paystack_initialize(
+        email=user.email, amount=amount, reference=reference,
+        callback_url=f"{frontend_url.rstrip('/')}/store/activated?reference={reference}&purpose=courier",
+        metadata={"user_id": str(user.id), "purpose": PURPOSE_COURIER},
+    )
+    db.add(Payment(user_id=user.id, purpose=PURPOSE_COURIER, reference=reference,
+                   amount_pesewas=amount, currency=CURRENCY, status="pending"))
+    await db.commit()
+    return {"status": "payment_required", "authorization_url": checkout["authorization_url"],
+            "reference": reference, "amount": amount / 100, "currency": CURRENCY}
 
 @router.post("", status_code=201)
 async def request_delivery(data: DeliveryIn, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):

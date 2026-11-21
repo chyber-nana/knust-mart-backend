@@ -26,6 +26,8 @@ PAYSTACK_API = "https://api.paystack.co"
 CURRENCY = "GHS"
 PURPOSE_STORE = "store_activation"
 PURPOSE_PROMOTION = "listing_promotion"
+PURPOSE_COURIER = "courier_registration"
+_COURIER_LOCK_KEY = 726_002
 _SLOT_LOCK_KEY = 726_001  # app-wide advisory lock id used when claiming a free slot
 
 
@@ -57,6 +59,21 @@ def promotion_fee_pesewas() -> int:
         fee = Decimal("5")
     return max(0, int((fee * 100).to_integral_value()))
 
+def free_courier_slots() -> int:
+    try:
+        return max(0, int(os.environ.get("FREE_COURIER_SLOTS", "5")))
+    except ValueError:
+        return 5
+
+
+def courier_fee_pesewas() -> int:
+    try:
+        fee = Decimal(os.environ.get("COURIER_FEE_GHS", "10"))
+    except InvalidOperation:
+        fee = Decimal("10")
+    return max(0, int((fee * 100).to_integral_value()))
+
+
 def new_reference() -> str:
     return f"kmart_{uuid.uuid4().hex}"
 
@@ -80,6 +97,25 @@ async def claim_free_slot(db: AsyncSession, user: User) -> bool:
         return False
     user.store_activated_at = datetime.now(timezone.utc)
     user.store_activation_type = "free_launch"
+    await db.flush()
+    return True
+
+
+async def courier_slots_left(db: AsyncSession) -> int:
+    used = (await db.execute(
+        select(func.count()).select_from(User).where(User.courier_activation_type == "free_launch")
+    )).scalar_one()
+    return max(0, free_courier_slots() - used)
+
+
+async def claim_free_courier_slot(db: AsyncSession, user: User) -> bool:
+    """Same advisory-lock pattern as claim_free_slot: the first FREE_COURIER_SLOTS couriers pay nothing."""
+    await db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": _COURIER_LOCK_KEY})
+    if await courier_slots_left(db) <= 0:
+        return False
+    user.courier_activated_at = datetime.now(timezone.utc)
+    user.courier_activation_type = "free_launch"
+    user.is_courier = True
     await db.flush()
     return True
 
@@ -166,6 +202,16 @@ async def apply_successful_charge(db: AsyncSession, payment: Payment, data: dict
                 db, payment.user_id, "listing_promoted", "Your listing is promoted",
                 f"Payment received. “{product.title}” now appears at the top of the marketplace.",
                 f"/products/{product.id}",
+            )
+    elif payment.purpose == PURPOSE_COURIER:
+        if user is not None and user.courier_activated_at is None:
+            user.courier_activated_at = now
+            user.courier_activation_type = "paid"
+            if not user.is_banned:
+                user.is_courier = True
+            add_notification(
+                db, user.id, "courier_activated", "You're a KNUST Mart courier",
+                "Payment received. Courier mode is on. You can now accept delivery jobs.", "/courier",
             )
     elif user is not None and user.store_activated_at is None:
         user.store_activated_at = now

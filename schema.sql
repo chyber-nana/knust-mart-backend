@@ -18,6 +18,8 @@ CREATE TABLE users (
   is_banned BOOLEAN NOT NULL DEFAULT FALSE,
   restriction VARCHAR(16) CHECK (restriction IS NULL OR restriction IN ('suspended', 'banned')),
   store_suspended_at TIMESTAMPTZ,
+  courier_activated_at TIMESTAMPTZ,
+  courier_activation_type TEXT CHECK (courier_activation_type IN ('free_launch', 'paid', 'legacy')),
   is_admin BOOLEAN NOT NULL DEFAULT FALSE,
   hostel_or_business_address TEXT,
   store_name TEXT,

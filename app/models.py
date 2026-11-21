@@ -56,6 +56,8 @@ class User(Base):
     store_activated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     store_activation_type: Mapped[str | None] = mapped_column(Text, nullable=True, index=True)
     store_suspended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    courier_activated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    courier_activation_type: Mapped[str | None] = mapped_column(Text, nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     @property
