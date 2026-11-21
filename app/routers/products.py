@@ -15,6 +15,14 @@ from .uploads import is_uploaded_image_url
 
 router = APIRouter(prefix="/products", tags=["products"])
 
+def clean_options(v: list[str] | None) -> list[str]:
+    seen, out = set(), []
+    for x in (v or []):
+        x = x.strip()[:20]
+        if x and x.lower() not in seen:
+            seen.add(x.lower()); out.append(x)
+    return out[:12]
+
 class ProductIn(BaseModel):
     title: str = Field(min_length=3, max_length=120)
     description: str | None = Field(default=None, max_length=2000)
@@ -24,6 +32,8 @@ class ProductIn(BaseModel):
     hall_location: str | None = None
     image_urls: list[str] = Field(min_length=1, max_length=5)
     stock: int | None = Field(default=None, ge=0, le=100000)
+    colors: list[str] = Field(default_factory=list, max_length=12)
+    sizes: list[str] = Field(default_factory=list, max_length=12)
 
 class ProductPatch(BaseModel):
     title: str | None = Field(default=None, min_length=3, max_length=120)
@@ -34,6 +44,8 @@ class ProductPatch(BaseModel):
     hall_location: str | None = None
     image_urls: list[str] | None = Field(default=None, min_length=1, max_length=5)
     stock: int | None = Field(default=None, ge=0, le=100000)
+    colors: list[str] | None = Field(default=None, max_length=12)
+    sizes: list[str] | None = Field(default=None, max_length=12)
 
 class ProductStatusIn(BaseModel):
     status: str = Field(pattern="^(active|reserved|sold)$")
@@ -92,6 +104,8 @@ async def detail(product_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
         **card(p, u, imgs),
         "description": p.description,
         "images": imgs,
+        "colors": p.colors or [],
+        "sizes": p.sizes or [],
         "status": p.status,
         "seller": {
             "id": str(u.id), "name": u.store_name or u.full_name, "user_type": u.user_type,
@@ -125,7 +139,9 @@ async def create(data: ProductIn, user: User = Depends(get_verified_user), db: A
         category=data.category,
         condition=None if is_service else data.condition,
         hall_location=None if is_service else location,
-        stock=None if is_service else data.stock
+        stock=None if is_service else data.stock,
+        colors=[] if is_service else clean_options(data.colors),
+        sizes=[] if is_service else clean_options(data.sizes)
     )
     db.add(p)
     await db.flush()
@@ -170,6 +186,8 @@ async def edit_listing(
         changes["condition"] = None
         changes["hall_location"] = None
         changes["stock"] = None
+        changes["colors"] = []
+        changes["sizes"] = []
     else:
         stock = changes["stock"] if "stock" in changes else product.stock
         if stock is None:
@@ -179,6 +197,9 @@ async def edit_listing(
         location = changes.get("hall_location", product.hall_location)
         if condition not in CONDITIONS or not location:
             raise HTTPException(422, "Items need a listed condition and location.")
+    for key in ("colors", "sizes"):
+        if key in changes:
+            changes[key] = clean_options(changes[key])
     image_urls = changes.pop("image_urls", None)
     if image_urls is not None:
         if not all(is_uploaded_image_url(url) for url in image_urls):

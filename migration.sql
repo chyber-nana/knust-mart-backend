@@ -57,3 +57,7 @@ create index if not exists ix_push_subscriptions_user_id on push_subscriptions (
 -- A completed handover means the courier was paid in person.
 update courier_payouts set status = 'paid' where status = 'pending';
 commit;
+
+-- Optional colours/sizes on listings
+alter table products add column if not exists colors jsonb not null default '[]'::jsonb;
+alter table products add column if not exists sizes jsonb not null default '[]'::jsonb;
