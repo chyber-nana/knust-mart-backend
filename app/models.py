@@ -209,6 +209,8 @@ class Delivery(Base):
     buyer_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
     courier_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     fulfillment_type: Mapped[str] = mapped_column(Text, default="courier", server_default="'courier'", nullable=False)
+    chosen_color: Mapped[str | None] = mapped_column(Text, nullable=True)
+    chosen_size: Mapped[str | None] = mapped_column(Text, nullable=True)
     choose_courier: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)
     pickup_location: Mapped[str] = mapped_column(Text, nullable=False)
     dropoff_location: Mapped[str] = mapped_column(Text, nullable=False)

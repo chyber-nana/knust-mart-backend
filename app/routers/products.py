@@ -60,7 +60,7 @@ async def images_for(db: AsyncSession, ids: list) -> dict:
 
 def card(p: Product, u: User, imgs: list[str]) -> dict:
     return {"id": str(p.id), "title": p.title, "price": float(p.price), "category": p.category, "condition": p.condition,
-            "hall_location": p.hall_location, "stock": p.stock, "image": imgs[0] if imgs else None, "is_promoted": bool(p.is_promoted),
+            "hall_location": p.hall_location, "stock": p.stock, "colors": p.colors or [], "sizes": p.sizes or [], "image": imgs[0] if imgs else None, "is_promoted": bool(p.is_promoted),
             "seller": {
                 "id": str(u.id), "name": u.store_name or u.full_name, "user_type": u.user_type,
                 "pickup_location": u.hostel_or_business_address or p.hall_location,

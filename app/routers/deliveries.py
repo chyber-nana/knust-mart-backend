@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import aliased
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -34,6 +34,8 @@ class DeliveryIn(BaseModel):
     fulfillment_type: Literal["courier", "pickup"] = "courier"
     delivery_fee: Decimal | None = None
     choose_courier: bool = False
+    color: str | None = Field(default=None, max_length=20)
+    size: str | None = Field(default=None, max_length=20)
 
 
 class SellerResponseIn(BaseModel):
@@ -42,6 +44,10 @@ class SellerResponseIn(BaseModel):
 
 class OfferIn(BaseModel):
     price: Decimal
+
+
+def _options(d: Delivery) -> str:
+    return " · ".join(x for x in (d.chosen_color, d.chosen_size and f"Size {d.chosen_size}") if x)
 
 
 def _fresh_offer_cutoff() -> datetime:
@@ -173,8 +179,18 @@ async def request_delivery(data: DeliveryIn, user: User = Depends(current_user),
     if data.fulfillment_type == "courier" and courier_price_range(pickup_location, dropoff_location) is None:
         raise HTTPException(409, "Courier delivery is only available between on-campus halls and hostels. Choose pickup instead.")
 
+    color = (data.color or "").strip() or None
+    size = (data.size or "").strip() or None
+    for label, value, allowed in (("colour", color, product.colors or []), ("size", size, product.sizes or [])):
+        if allowed and value not in allowed:
+            raise HTTPException(422, f"Choose a {label} for this item.")
+        if not allowed and value:
+            raise HTTPException(422, f"This item has no {label} options.")
+    picked = " (" + " · ".join(x for x in (color, size) if x) + ")" if (color or size) else ""
     take_unit(product)
     d = Delivery(
+        chosen_color=color,
+        chosen_size=size,
         product_id=product.id,
         buyer_id=user.id,
         fulfillment_type=data.fulfillment_type,
@@ -195,7 +211,7 @@ async def request_delivery(data: DeliveryIn, user: User = Depends(current_user),
     )
     add_notification(
         db, product.seller_id, "order_requested", "New order",
-        f"A buyer requested delivery for {product.title}.",
+        f"A buyer requested delivery for {product.title}{picked}.",
         f"/orders/{d.id}",
     )
     if data.fulfillment_type == "courier":
@@ -378,6 +394,7 @@ async def job_board(pickup: str | None = None, dropoff: str | None = None,
             "fixed_accept_open": _fixed_accept_open(r, count),
             "available_at": r.courier_available_at.isoformat() if r.courier_available_at else None,
             "product_title": product.title,
+            "options": _options(r),
         })
     return out
 
@@ -533,6 +550,7 @@ async def receipt(delivery_id: str, user: User = Depends(current_user), db: Asyn
         "choose_courier": d.choose_courier,
         "product_id": str(product.id),
         "product_title": product.title,
+        "options": _options(d),
         "vendor_name": vendor.store_name or vendor.full_name,
         "pickup": d.pickup_location,
         "dropoff": d.dropoff_location,
@@ -749,6 +767,7 @@ async def mine(user: User = Depends(current_user), db: AsyncSession = Depends(ge
             "fee": d.delivery_fee,
             "product_id": str(p.id),
             "product_title": p.title,
+            "options": _options(d),
             "vendor_id": str(vendor.id),
             "vendor_name": vendor.store_name or vendor.full_name,
         }

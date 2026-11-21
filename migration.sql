@@ -64,3 +64,7 @@ alter table products add column if not exists sizes jsonb not null default '[]':
 
 -- Default courier flow: standard price, first courier accepts. Buyer can opt in to offers.
 alter table deliveries add column if not exists choose_courier boolean not null default false;
+
+-- Buyer's chosen colour/size on an order
+alter table deliveries add column if not exists chosen_color text;
+alter table deliveries add column if not exists chosen_size text;
