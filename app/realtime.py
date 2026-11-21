@@ -8,6 +8,7 @@ from sqlalchemy import event
 from sqlalchemy.orm import Session
 
 from .models import ChatMessage, Notification
+from . import push
 
 
 class Hub:
@@ -79,10 +80,13 @@ def message_payload(message: ChatMessage) -> dict:
 @event.listens_for(Session, "after_flush")
 def _collect_realtime(session: Session, _ctx) -> None:
     events = session.info.setdefault("realtime_events", [])
+    pushes = session.info.setdefault("push_events", [])
     for obj in session.new:
         if isinstance(obj, Notification) and obj.id is not None:
             events.append((f"user:{obj.user_id}", notification_payload(obj)))
+            pushes.append((obj.user_id, obj.title, obj.body, obj.link))
         elif isinstance(obj, ChatMessage) and obj.id is not None:
+            pushes.append((obj.receiver_id, "New message", "You have a new message on KNUST Mart.", "/inbox"))
             payload = message_payload(obj)
             events.append((f"user:{obj.receiver_id}", payload))
             events.append((f"user:{obj.sender_id}", payload))
@@ -91,19 +95,23 @@ def _collect_realtime(session: Session, _ctx) -> None:
 @event.listens_for(Session, "after_commit")
 def _publish_realtime(session: Session) -> None:
     events = session.info.pop("realtime_events", None)
-    if not events:
+    pushes = session.info.pop("push_events", None)
+    if not events and not pushes:
         return
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
         return
-    for channel, payload in events:
+    for channel, payload in events or ():
         loop.call_soon_threadsafe(hub.publish, channel, payload)
+    for user_id, title, body, link in pushes or ():
+        push.schedule(loop, user_id, title, body, link)
 
 
 @event.listens_for(Session, "after_rollback")
 def _clear_realtime(session: Session) -> None:
     session.info.pop("realtime_events", None)
+    session.info.pop("push_events", None)
 
 
 async def user_event_stream(request, user_id: uuid.UUID):

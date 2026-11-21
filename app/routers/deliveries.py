@@ -637,10 +637,10 @@ async def scan(delivery_id: str, data: ScanIn, user: User = Depends(current_user
         courier_id=user.id,
         delivery_id=d.id,
         amount=d.delivery_fee,
-        status="pending",
+        status="paid",  # the buyer pays the courier in person at handover, so the handover scan settles it
     ))
     await db.commit()
-    return {"status": d.status, "payout": d.delivery_fee, "payout_status": "pending"}
+    return {"status": d.status, "payout": d.delivery_fee, "payout_status": "paid"}
 
 @router.post("/{delivery_id}/fail")
 async def fail(delivery_id: str, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):

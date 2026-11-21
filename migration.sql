@@ -41,3 +41,19 @@ create table if not exists delivery_offers (
 create index if not exists ix_delivery_offers_delivery_id on delivery_offers (delivery_id);
 create index if not exists ix_delivery_offers_courier_id on delivery_offers (courier_id);
 commit;
+
+-- Phone push subscriptions + settle existing courier payouts. Run once.
+begin;
+create table if not exists push_subscriptions (
+  id serial primary key,
+  user_id uuid not null references users(id) on delete cascade,
+  endpoint text not null,
+  p256dh text not null,
+  auth text not null,
+  created_at timestamptz not null default now(),
+  constraint push_subscriptions_endpoint_key unique (endpoint)
+);
+create index if not exists ix_push_subscriptions_user_id on push_subscriptions (user_id);
+-- A completed handover means the courier was paid in person.
+update courier_payouts set status = 'paid' where status = 'pending';
+commit;

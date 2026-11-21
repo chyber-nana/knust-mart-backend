@@ -172,3 +172,12 @@ CREATE TABLE delivery_offers (
 );
 CREATE INDEX ix_delivery_offers_delivery_id ON delivery_offers (delivery_id);
 CREATE INDEX ix_delivery_offers_courier_id ON delivery_offers (courier_id);
+
+CREATE TABLE push_subscriptions (
+  id SERIAL PRIMARY KEY,
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  endpoint TEXT NOT NULL UNIQUE,
+  p256dh TEXT NOT NULL,
+  auth TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);

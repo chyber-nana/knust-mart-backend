@@ -197,7 +197,8 @@ async def storefront(vendor_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
         .order_by(Review.id.desc())
         .limit(100)
     )).all()
-    sales = (await db.execute(select(func.count(Product.id)).where(Product.seller_id == u.id, Product.status == "sold"))).scalar_one()
+    # Sales = completed orders (listings with stock stay active, so counting "sold" listings undercounts).
+    sales = (await db.execute(select(func.count(Delivery.id)).join(Product, Product.id == Delivery.product_id).where(Product.seller_id == u.id, Delivery.status == "delivered"))).scalar_one()
     rows = (await db.execute(select(Product).where(Product.seller_id == u.id, Product.status == "active").order_by(Product.created_at.desc()))).scalars().all()
     imgs = await images_for(db, [p.id for p in rows])
     # Public fields only: never expose the vendor's email.
