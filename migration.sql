@@ -61,3 +61,6 @@ commit;
 -- Optional colours/sizes on listings
 alter table products add column if not exists colors jsonb not null default '[]'::jsonb;
 alter table products add column if not exists sizes jsonb not null default '[]'::jsonb;
+
+-- Default courier flow: standard price, first courier accepts. Buyer can opt in to offers.
+alter table deliveries add column if not exists choose_courier boolean not null default false;

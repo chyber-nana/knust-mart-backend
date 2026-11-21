@@ -33,6 +33,7 @@ class DeliveryIn(BaseModel):
     dropoff_location: str | None = None
     fulfillment_type: Literal["courier", "pickup"] = "courier"
     delivery_fee: Decimal | None = None
+    choose_courier: bool = False
 
 
 class SellerResponseIn(BaseModel):
@@ -49,6 +50,8 @@ def _fresh_offer_cutoff() -> datetime:
 
 def _fixed_accept_open(d: Delivery, open_offers: int) -> bool:
     """Fallback: after a quiet period with no offers, the old fixed-price first-come accept opens."""
+    if not d.choose_courier:
+        return True  # default: standard price, first courier to accept
     if open_offers or d.courier_available_at is None:
         return False
     return datetime.now(timezone.utc) >= d.courier_available_at + timedelta(minutes=FIXED_ACCEPT_AFTER_MINUTES)
@@ -177,7 +180,8 @@ async def request_delivery(data: DeliveryIn, user: User = Depends(current_user),
         fulfillment_type=data.fulfillment_type,
         pickup_location=pickup_location,
         dropoff_location=dropoff_location,
-        delivery_fee=DELIVERY_FEE if data.fulfillment_type == "courier" else Decimal("0.00"),
+        delivery_fee=Decimal(str(DELIVERY_FEE)) if data.fulfillment_type == "courier" else Decimal("0.00"),
+        choose_courier=bool(data.choose_courier and data.fulfillment_type == "courier"),
         delivery_qr_token=secrets.token_urlsafe(32),
         pin_code=f"{secrets.randbelow(10**6):06d}",
         status="awaiting_seller",
@@ -368,6 +372,7 @@ async def job_board(pickup: str | None = None, dropoff: str | None = None,
             "dropoff": r.dropoff_location,
             "fee": r.delivery_fee,
             "price_min": rng[0], "price_max": rng[1],
+            "choose_courier": r.choose_courier,
             "my_offer": mine.price if mine else None,
             "open_offers": count,
             "fixed_accept_open": _fixed_accept_open(r, count),
@@ -381,7 +386,7 @@ async def job_board(pickup: str | None = None, dropoff: str | None = None,
 async def make_offer(delivery_id: str, data: OfferIn, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
     """A courier offers to deliver at a price within the allowed range for the trip."""
     d = await get_delivery(db, delivery_id)
-    if not user.is_courier or user.is_banned or d.status != "pending" or d.fulfillment_type != "courier" or d.buyer_id == user.id:
+    if not user.is_courier or user.is_banned or d.status != "pending" or d.fulfillment_type != "courier" or d.buyer_id == user.id or not d.choose_courier:
         raise HTTPException(409, "You can't make an offer on this job.")
     rng = courier_price_range(d.pickup_location, d.dropoff_location)
     if rng is None:
@@ -454,6 +459,17 @@ async def list_offers(delivery_id: str, user: User = Depends(current_user), db: 
     return out
 
 
+@router.post("/{delivery_id}/choose-mode")
+async def enable_choose_mode(delivery_id: str, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
+    """Buyer opts in to comparing courier offers instead of the standard-price first-come courier."""
+    d = await get_delivery(db, delivery_id)
+    if d.buyer_id != user.id or d.status != "pending" or d.fulfillment_type != "courier":
+        raise HTTPException(409, "You can't change this order right now.")
+    d.choose_courier = True
+    await db.commit()
+    return {"choose_courier": True}
+
+
 @router.post("/{delivery_id}/offers/{offer_id}/choose")
 async def choose_offer(delivery_id: str, offer_id: str, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
     d = await get_delivery(db, delivery_id)
@@ -514,6 +530,7 @@ async def receipt(delivery_id: str, user: User = Depends(current_user), db: Asyn
         "status": d.status,
         "role": "buyer" if is_buyer else "seller",
         "fulfillment_type": d.fulfillment_type,
+        "choose_courier": d.choose_courier,
         "product_id": str(product.id),
         "product_title": product.title,
         "vendor_name": vendor.store_name or vendor.full_name,
@@ -726,6 +743,7 @@ async def mine(user: User = Depends(current_user), db: AsyncSession = Depends(ge
             "role": role,
             "status": d.status,
             "fulfillment_type": d.fulfillment_type,
+            "choose_courier": d.choose_courier,
             "pickup": d.pickup_location,
             "dropoff": d.dropoff_location,
             "fee": d.delivery_fee,
