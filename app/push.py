@@ -4,11 +4,13 @@ Env: VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY (from generate_vapid_keys.py), VAPID_SU
 """
 import asyncio
 import json
+import logging
 import os
 import uuid
 
 from sqlalchemy import delete, select
 
+log = logging.getLogger("knustmart.push")
 _tasks: set[asyncio.Task] = set()
 
 
@@ -25,12 +27,15 @@ def _send_one(sub: dict, payload: str) -> int | None:
             data=payload,
             vapid_private_key=os.environ["VAPID_PRIVATE_KEY"],
             vapid_claims={"sub": os.environ.get("VAPID_SUBJECT", "mailto:admin@knustmart.site")},
-            ttl=3600,
+            ttl=86400,  # keep trying for a day if the phone is offline
+            headers={"Urgency": "high"},  # ask the push service to wake the phone now instead of batching while it is idle
         )
     except WebPushException as exc:
         status = getattr(getattr(exc, "response", None), "status_code", None)
+        log.warning("push rejected (status %s): %s", status, str(exc)[:200])
         return status if status in (404, 410) else None
-    except Exception:  # never let a push problem affect the request that triggered it
+    except Exception as exc:  # never let a push problem affect the request that triggered it
+        log.warning("push failed: %s", str(exc)[:200])
         return None
     return None
 
