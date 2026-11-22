@@ -51,6 +51,15 @@ async def _ensure_schema() -> None:
     await ensure_stock_column(engine)
     await _ensure_moderation_columns(engine)
     await _ensure_promotion_support(engine)
+    await _ensure_escrow_support(engine)
+    import asyncio
+    from .escrow import send_announcement, sweeper
+    from .db import Session
+    from .switches import escrow_enabled
+    if escrow_enabled():
+        async with Session() as s:
+            await send_announcement(s)
+    asyncio.create_task(sweeper())
 
 async def _ensure_promotion_support(engine) -> None:
     from sqlalchemy import text
@@ -59,6 +68,30 @@ async def _ensure_promotion_support(engine) -> None:
             "alter table payments add column if not exists product_id uuid references products(id) on delete set null"))
         await conn.execute(text(
             "update products set hall_location = 'Queens' where hall_location = 'Queen Elizabeth II'"))
+
+
+async def _ensure_escrow_support(engine) -> None:
+    from sqlalchemy import text
+    stmts = [
+        "alter table deliveries add column if not exists item_amount numeric(10,2)",
+        "alter table deliveries add column if not exists service_fee numeric(8,2)",
+        "alter table deliveries add column if not exists amount_paid_pesewas integer",
+        "alter table deliveries add column if not exists payment_reference text",
+        "alter table deliveries add column if not exists paid_at timestamptz",
+        "alter table deliveries add column if not exists refunded_at timestamptz",
+        "alter table deliveries add column if not exists seller_paid_at timestamptz",
+        "alter table payments add column if not exists delivery_id uuid references deliveries(id) on delete set null",
+        "alter table courier_payouts add column if not exists transfer_reference text",
+        "alter table users add column if not exists momo_network text",
+        "alter table users add column if not exists momo_number text",
+        "alter table users add column if not exists momo_name text",
+        "alter table users add column if not exists momo_recipient_code text",
+        "alter table deliveries drop constraint if exists deliveries_status_check",
+        "alter table deliveries add constraint deliveries_status_check check (status in ('awaiting_seller','awaiting_payment','pending','ready_for_pickup','accepted','in_transit','delivered','failed','disputed','cancelled'))",
+    ]
+    async with engine.begin() as conn:
+        for s in stmts:
+            await conn.execute(text(s))
 
 
 async def _ensure_moderation_columns(engine) -> None:

@@ -7,6 +7,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from ..catalog import CAMPUS_PLACES, CATEGORIES, CONDITIONS, DELIVERY_FEE, FEES, LOCATIONS, OFF_CAMPUS, clean_location
 from ..db import get_db
+from ..switches import courier_enabled, escrow_enabled
 from ..billing import CURRENCY, PURPOSE_PROMOTION, new_reference, paystack_initialize, promotion_fee_pesewas
 from ..models import ChatMessage, Delivery, Payment, Product, ProductImage, Review, User
 from ..security import get_verified_user
@@ -68,7 +69,7 @@ def card(p: Product, u: User, imgs: list[str]) -> dict:
 
 @router.get("/meta")
 async def meta():
-    return {"categories": CATEGORIES, "conditions": CONDITIONS, "locations": LOCATIONS, "fees": {t: {**v, "promotion": promotion_fee_pesewas() / 100} for t, v in FEES.items()}, "delivery_fee": DELIVERY_FEE}
+    return {"categories": CATEGORIES, "conditions": CONDITIONS, "locations": LOCATIONS, "fees": {t: {**v, "promotion": promotion_fee_pesewas() / 100} for t, v in FEES.items()}, "delivery_fee": DELIVERY_FEE, "courier_enabled": courier_enabled(), "escrow_enabled": escrow_enabled()}
 
 @router.get("")
 async def browse(q: str | None = None, category: str | None = None, condition: str | None = None,

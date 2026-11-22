@@ -25,7 +25,7 @@ async def stats(_: User = Depends(admin_user), db: AsyncSession = Depends(get_db
     promoted = await db.scalar(select(func.count()).select_from(Product).where(Product.is_promoted.is_(True)))
     revenue = await db.execute(
         select(Payment.purpose, func.coalesce(func.sum(Payment.amount_pesewas), 0))
-        .where(Payment.status == "success").group_by(Payment.purpose)
+        .where(Payment.status == "success", Payment.purpose != "order_payment").group_by(Payment.purpose)
     )
     revenue_by_purpose = {p: int(v) / 100 for p, v in revenue.all()}
     total_products = sum(product_status.values())

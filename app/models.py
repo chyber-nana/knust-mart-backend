@@ -56,6 +56,10 @@ class User(Base):
     store_activated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     store_activation_type: Mapped[str | None] = mapped_column(Text, nullable=True, index=True)
     store_suspended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    momo_network: Mapped[str | None] = mapped_column(Text, nullable=True)
+    momo_number: Mapped[str | None] = mapped_column(Text, nullable=True)
+    momo_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    momo_recipient_code: Mapped[str | None] = mapped_column(Text, nullable=True)
     courier_activated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     courier_activation_type: Mapped[str | None] = mapped_column(Text, nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -190,7 +194,7 @@ class Delivery(Base):
     __tablename__ = "deliveries"
     __table_args__ = (
         CheckConstraint(
-            "status IN ('awaiting_seller', 'pending', 'ready_for_pickup', 'accepted', 'in_transit', 'delivered', 'failed', 'disputed', 'cancelled')",
+            "status IN ('awaiting_seller', 'awaiting_payment', 'pending', 'ready_for_pickup', 'accepted', 'in_transit', 'delivered', 'failed', 'disputed', 'cancelled')",
             name="deliveries_status_check",
         ),
         CheckConstraint(
@@ -209,6 +213,13 @@ class Delivery(Base):
     buyer_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
     courier_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     fulfillment_type: Mapped[str] = mapped_column(Text, default="courier", server_default="'courier'", nullable=False)
+    item_amount: Mapped[Decimal | None] = mapped_column(Numeric(10, 2), nullable=True)
+    service_fee: Mapped[Decimal | None] = mapped_column(Numeric(8, 2), nullable=True)
+    amount_paid_pesewas: Mapped[int | None] = mapped_column(nullable=True)
+    payment_reference: Mapped[str | None] = mapped_column(Text, nullable=True)
+    paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    refunded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    seller_paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     seller_released_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     dropoff_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     chosen_color: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -302,6 +313,7 @@ class CourierPayout(Base):
     courier_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
     delivery_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("deliveries.id"), nullable=False)
     amount: Mapped[Decimal] = mapped_column(Numeric(8, 2), nullable=False)
+    transfer_reference: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(Text, default="pending", server_default="'pending'", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
@@ -317,6 +329,7 @@ class Payment(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
     purpose: Mapped[str] = mapped_column(Text, nullable=False)
     product_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("products.id", ondelete="SET NULL"), nullable=True)
+    delivery_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("deliveries.id", ondelete="SET NULL"), nullable=True)
     reference: Mapped[str] = mapped_column(Text, nullable=False)
     amount_pesewas: Mapped[int] = mapped_column(nullable=False)
     currency: Mapped[str] = mapped_column(String(3), default="GHS", server_default="GHS", nullable=False)

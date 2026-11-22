@@ -20,6 +20,9 @@ from ..db import get_db
 from ..mailer import send_email
 from ..models import CourierPayout, Delivery, DeliveryOffer, Payment, Product, Review, User
 from ..stock import complete_unit, release_unit, take_unit
+from ..switches import courier_allowed, escrow_allowed
+from ..escrow import PURPOSE_ORDER, quote, release_to_seller, safe_refund
+from ..billing import CURRENCY as PAY_CURRENCY
 from ..notifications import add_notification
 from ..security import current_user
 from ..catalog import clean_location
@@ -62,6 +65,15 @@ def _fixed_accept_open(d: Delivery, open_offers: int) -> bool:
     if open_offers or d.courier_available_at is None:
         return False
     return datetime.now(timezone.utc) >= d.courier_available_at + timedelta(minutes=FIXED_ACCEPT_AFTER_MINUTES)
+
+
+async def _pay_seller(db: AsyncSession, d: Delivery) -> None:
+    """Best effort right after handover; the hourly sweeper retries anything that fails."""
+    try:
+        if await release_to_seller(db, d):
+            await db.commit()
+    except Exception:
+        await db.rollback()
 
 
 class ScanIn(BaseModel):
@@ -117,6 +129,8 @@ async def courier_activation(user: User = Depends(current_user), db: AsyncSessio
 @router.post("/couriers/activate")
 async def activate_courier(user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
     """Register as a courier: free for the first few couriers, otherwise a Paystack checkout."""
+    if not courier_allowed(user):
+        raise HTTPException(403, "Courier registration opens soon.")
     if not user.is_verified_student:
         raise HTTPException(403, "Only verified students can deliver.")
     if user.is_banned:
@@ -151,6 +165,8 @@ async def activate_courier(user: User = Depends(current_user), db: AsyncSession 
 
 @router.post("", status_code=201)
 async def request_delivery(data: DeliveryIn, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
+    if data.fulfillment_type == "courier" and not courier_allowed(user):
+        raise HTTPException(403, "Courier delivery isn't available yet. Please choose Pickup.")
     if data.fulfillment_type == "courier":
         data.dropoff_location = clean_location(data.dropoff_location)
         if not data.dropoff_location:
@@ -199,7 +215,7 @@ async def request_delivery(data: DeliveryIn, user: User = Depends(current_user),
         pickup_location=pickup_location,
         dropoff_location=dropoff_location,
         delivery_fee=Decimal(str(DELIVERY_FEE)) if data.fulfillment_type == "courier" else Decimal("0.00"),
-        choose_courier=bool(data.choose_courier and data.fulfillment_type == "courier"),
+        choose_courier=False,  # fixed delivery fee: the buyer pays before a courier is chosen
         delivery_qr_token=secrets.token_urlsafe(32),
         pin_code=f"{secrets.randbelow(10**6):06d}",
         status="awaiting_seller",
@@ -245,9 +261,9 @@ async def cancel_delivery(
     if d.buyer_id != user.id:
         raise HTTPException(403, "Only the buyer can cancel this order.")
     cancellable = (
-        {"awaiting_seller", "pending", "accepted"}
+        {"awaiting_seller", "awaiting_payment", "pending", "accepted"}
         if d.fulfillment_type == "courier"
-        else {"awaiting_seller", "ready_for_pickup"}
+        else {"awaiting_seller", "awaiting_payment", "ready_for_pickup"}
     )
     if d.status not in cancellable:
         raise HTTPException(409, "This order can no longer be cancelled after handoff.")
@@ -259,6 +275,7 @@ async def cancel_delivery(
         raise HTTPException(409, "The listing for this order no longer exists.")
     d.status = "cancelled"
     release_unit(product)
+    await safe_refund(db, d, "Buyer cancelled before handover")
     add_notification(
         db, user.id, "order_cancelled", "Order cancelled",
         f"Your order for {product.title} was cancelled.",
@@ -320,45 +337,88 @@ async def seller_response(
         await db.commit()
         return {"status": d.status}
 
-    if d.fulfillment_type == "pickup":
-        d.status = "ready_for_pickup"
-        add_notification(
-            db, d.buyer_id, "order_ready_for_pickup", "Ready for pickup",
-            f"{product.title} is ready for you at {d.dropoff_location}.",
-            f"/orders/{d.id}",
-        )
-    else:
-        d.status = "pending"
-        d.courier_available_at = now + timedelta(seconds=10)
-        courier_ids = await db.scalars(
-            select(User.id).where(
-                User.is_courier.is_(True),
-                User.is_verified_student.is_(True),
-                User.is_banned.is_(False),
-                User.id != d.buyer_id,
-            )
-        )
-        for courier_id in courier_ids:
+    buyer = await db.get(User, d.buyer_id)
+    if not (buyer and escrow_allowed(buyer)):
+        # Escrow is off: the original flow. The buyer pays the seller in person at handover.
+        if d.fulfillment_type == "pickup":
+            d.status = "ready_for_pickup"
             add_notification(
-                db, courier_id, "delivery_available", "Delivery ready to accept",
-                f"The seller confirmed {product.title}. You can accept it in 10 seconds.",
-                "/courier",
+                db, d.buyer_id, "order_ready_for_pickup", "Ready for pickup",
+                f"{product.title} is ready for you at {d.dropoff_location}.",
+                f"/orders/{d.id}",
             )
-        add_notification(
-            db, d.buyer_id, "order_confirmed", "Seller confirmed your order",
-            f"{product.title} is confirmed. A courier can accept it shortly.",
-            f"/orders/{d.id}",
-        )
+        else:
+            d.status = "pending"
+            d.courier_available_at = now + timedelta(seconds=10)
+            courier_ids = await db.scalars(
+                select(User.id).where(
+                    User.is_courier.is_(True),
+                    User.is_verified_student.is_(True),
+                    User.is_banned.is_(False),
+                    User.id != d.buyer_id,
+                )
+            )
+            for courier_id in courier_ids:
+                add_notification(
+                    db, courier_id, "delivery_available", "Delivery ready to accept",
+                    f"The seller confirmed {product.title}. You can accept it in 10 seconds.",
+                    "/courier",
+                )
+            add_notification(
+                db, d.buyer_id, "order_confirmed", "Seller confirmed your order",
+                f"{product.title} is confirmed. A courier can accept it shortly.",
+                f"/orders/{d.id}",
+            )
+        await db.commit()
+        return {
+            "status": d.status,
+            "courier_available_at": d.courier_available_at.isoformat() if d.courier_available_at else None,
+        }
+    if not user.momo_recipient_code:
+        await db.rollback()
+        raise HTTPException(409, "Add and confirm your MoMo number in Settings before you accept orders, so we can pay you.")
+    q = quote(product.price, d.delivery_fee, d.fulfillment_type == "courier")
+    d.item_amount, d.service_fee = product.price, q["service_fee"]
+    d.status = "awaiting_payment"
+    add_notification(
+        db, d.buyer_id, "order_confirmed", "Seller confirmed: pay to secure your order",
+        f"{product.title} is available. Pay GH\u20b5{q['total']:.2f} (item GH\u20b5{q['item']:.2f}, delivery GH\u20b5{q['delivery']:.2f}, service fee GH\u20b5{q['service_fee']:.2f}). Your money is held until the handover is confirmed.",
+        f"/orders/{d.id}",
+    )
     await db.commit()
-    return {
-        "status": d.status,
-        "courier_available_at": d.courier_available_at.isoformat() if d.courier_available_at else None,
-    }
+    return {"status": d.status}
+
+
+@router.post("/{delivery_id}/pay")
+async def pay_for_order(delivery_id: str, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
+    """Buyer pays item + delivery + service fee in one Paystack checkout. The money is held until handover."""
+    d = await get_delivery(db, delivery_id)
+    if d.buyer_id != user.id or d.status != "awaiting_payment":
+        raise HTTPException(409, "This order isn't waiting for payment.")
+    product = await db.get(Product, d.product_id)
+    if product is None:
+        raise HTTPException(409, "The listing for this order no longer exists.")
+    frontend_url = os.environ.get("FRONTEND_URL")
+    if not frontend_url:
+        raise HTTPException(503, "Payments are not available right now.")
+    q = quote(d.item_amount, d.delivery_fee, d.fulfillment_type == "courier")
+    reference = new_reference()
+    checkout = await paystack_initialize(
+        email=user.email, amount=q["total_pesewas"], reference=reference,
+        callback_url=f"{frontend_url.rstrip('/')}/store/activated?reference={reference}&purpose=order",
+        metadata={"user_id": str(user.id), "purpose": PURPOSE_ORDER, "delivery_id": str(d.id)},
+    )
+    db.add(Payment(user_id=user.id, purpose=PURPOSE_ORDER, delivery_id=d.id, product_id=product.id, reference=reference,
+                   amount_pesewas=q["total_pesewas"], currency=PAY_CURRENCY, status="pending"))
+    await db.commit()
+    return {"authorization_url": checkout["authorization_url"], "reference": reference, "amount": q["total"]}
 
 
 @router.get("/board")
 async def job_board(pickup: str | None = None, dropoff: str | None = None,
                     user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
+    if not courier_allowed(user):
+        raise HTTPException(403, "Courier deliveries open soon.")
     if not user.is_courier:
         raise HTTPException(403, "Turn on courier mode to see jobs.")
     q = (
@@ -368,6 +428,7 @@ async def job_board(pickup: str | None = None, dropoff: str | None = None,
             Delivery.status == "pending",
             Delivery.fulfillment_type == "courier",
             Delivery.buyer_id != user.id,
+            Product.seller_id != user.id,  # sellers can't courier their own goods
         )
     )
     if pickup: q = q.where(Delivery.pickup_location == pickup)
@@ -407,6 +468,8 @@ async def make_offer(delivery_id: str, data: OfferIn, user: User = Depends(curre
     d = await get_delivery(db, delivery_id)
     if not user.is_courier or user.is_banned or d.status != "pending" or d.fulfillment_type != "courier" or d.buyer_id == user.id or not d.choose_courier:
         raise HTTPException(409, "You can't make an offer on this job.")
+    if await db.scalar(select(Product.id).where(Product.id == d.product_id, Product.seller_id == user.id)):
+        raise HTTPException(409, "You can't deliver your own listing.")
     rng = courier_price_range(d.pickup_location, d.dropoff_location)
     if rng is None:
         raise HTTPException(409, "This trip is outside the courier service area.")
@@ -561,6 +624,11 @@ async def receipt(delivery_id: str, user: User = Depends(current_user), db: Asyn
         "pickup": d.pickup_location,
         "dropoff": d.dropoff_location,
         "fee": d.delivery_fee,
+        "item_amount": d.item_amount,
+        "service_fee": d.service_fee,
+        "total": Decimal(d.amount_paid_pesewas) / 100 if d.amount_paid_pesewas else None,
+        "paid": d.paid_at is not None,
+        "refunded": d.refunded_at is not None,
         "released": d.seller_released_at is not None,
         "dropoff_note": d.dropoff_note,
         "courier_name": courier.full_name if courier else None,
@@ -573,12 +641,18 @@ async def receipt(delivery_id: str, user: User = Depends(current_user), db: Asyn
 
 @router.post("/{delivery_id}/accept")
 async def accept(delivery_id: str, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
+    if not courier_allowed(user):
+        raise HTTPException(403, "Courier deliveries open soon.")
     d = await get_delivery(db, delivery_id)
     courier = (await db.execute(
         select(User).where(User.id == user.id).with_for_update()
     )).scalar_one()
     if not courier.is_courier or d.status != "pending" or d.buyer_id == user.id:
         raise HTTPException(409, "This job can't be accepted.")
+    if not courier.momo_recipient_code:
+        raise HTTPException(409, "Add and confirm your MoMo number in Settings so we can pay you.")
+    if await db.scalar(select(Product.id).where(Product.id == d.product_id, Product.seller_id == user.id)):
+        raise HTTPException(409, "You can't deliver your own listing.")
     if d.courier_available_at and d.courier_available_at > datetime.now(timezone.utc):
         raise HTTPException(409, "Please wait for the 10-second acceptance cooldown.")
     open_offers = await db.scalar(select(func.count(DeliveryOffer.id)).where(
@@ -636,14 +710,45 @@ async def confirm_pickup(
         f"/orders/{d.id}",
     )
     await db.commit()
+    await _pay_seller(db, d)
     return {"status": d.status}
+
+@router.get("/sales")
+async def sales(user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
+    """Completed sales for the seller's listings, with a small summary for the dashboard."""
+    rows = (await db.execute(
+        select(Delivery, Product, User)
+        .join(Product, Product.id == Delivery.product_id)
+        .join(User, User.id == Delivery.buyer_id)
+        .where(Product.seller_id == user.id, Delivery.status == "delivered")
+        .order_by(Delivery.completed_at.desc().nullslast()).limit(500)
+    )).all()
+    now = datetime.now(timezone.utc)
+    items, total, month, by_product = [], Decimal("0"), 0, {}
+    for d, p, buyer in rows:
+        total += p.price
+        if d.completed_at and d.completed_at.year == now.year and d.completed_at.month == now.month:
+            month += 1
+        by_product[p.title] = by_product.get(p.title, 0) + 1
+        items.append({
+            "id": str(d.id), "product_title": p.title, "options": _options(d), "price": p.price,
+            "buyer_name": buyer.full_name, "fulfillment_type": d.fulfillment_type,
+            "completed_at": d.completed_at.isoformat() if d.completed_at else None,
+        })
+    open_orders = await db.scalar(
+        select(func.count(Delivery.id)).join(Product, Product.id == Delivery.product_id).where(
+            Product.seller_id == user.id, Delivery.status.in_(("awaiting_seller", "awaiting_payment", "pending", "ready_for_pickup", "accepted", "in_transit"))))
+    top = max(by_product.items(), key=lambda kv: kv[1]) if by_product else None
+    return {"sold": len(items), "earned": total, "this_month": month, "open_orders": open_orders or 0,
+            "top_product": {"title": top[0], "count": top[1]} if top else None, "items": items}
+
 
 @router.get("/active-count")
 async def active_count(user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
     """Orders still in progress for this user (as buyer, seller or courier): drives the red dot on Orders."""
     n = await db.scalar(
         select(func.count(Delivery.id)).join(Product, Product.id == Delivery.product_id).where(
-            Delivery.status.in_(("awaiting_seller", "pending", "ready_for_pickup", "accepted", "in_transit")),
+            Delivery.status.in_(("awaiting_seller", "awaiting_payment", "pending", "ready_for_pickup", "accepted", "in_transit")),
             (Delivery.buyer_id == user.id) | (Delivery.courier_id == user.id) | (Product.seller_id == user.id),
         )
     )
@@ -719,10 +824,11 @@ async def scan(delivery_id: str, data: ScanIn, user: User = Depends(current_user
         courier_id=user.id,
         delivery_id=d.id,
         amount=d.delivery_fee,
-        status="paid",  # the buyer pays the courier in person at handover, so the handover scan settles it
+        status="pending" if d.paid_at else "paid",  # paid orders: weekly MoMo batch; older orders were paid in person
     ))
     await db.commit()
-    return {"status": d.status, "payout": d.delivery_fee, "payout_status": "paid"}
+    await _pay_seller(db, d)
+    return {"status": d.status, "payout": d.delivery_fee, "payout_status": "pending" if d.paid_at else "paid"}
 
 @router.post("/{delivery_id}/fail")
 async def fail(delivery_id: str, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
@@ -734,6 +840,7 @@ async def fail(delivery_id: str, user: User = Depends(current_user), db: AsyncSe
     product = await db.get(Product, d.product_id)
     if product is not None:
         release_unit(product)
+    await safe_refund(db, d, "Delivery not completed")
     if product is not None:
         add_notification(
             db, d.buyer_id, "order_failed", "Delivery not completed",
@@ -812,6 +919,10 @@ async def mine(user: User = Depends(current_user), db: AsyncSession = Depends(ge
             "pickup": d.pickup_location,
             "dropoff": d.dropoff_location,
             "fee": d.delivery_fee,
+            "item_amount": d.item_amount,
+            "service_fee": d.service_fee,
+            "paid": d.paid_at is not None,
+            "refunded": d.refunded_at is not None,
             "product_id": str(p.id),
             "product_title": p.title,
             "options": _options(d),

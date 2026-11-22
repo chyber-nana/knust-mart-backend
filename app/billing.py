@@ -203,6 +203,13 @@ async def apply_successful_charge(db: AsyncSession, payment: Payment, data: dict
                 f"Payment received. “{product.title}” now appears at the top of the marketplace.",
                 f"/products/{product.id}",
             )
+    elif payment.purpose == "order_payment":
+        from .escrow import advance_paid_order
+        from .models import Delivery
+        d = await db.get(Delivery, payment.delivery_id) if payment.delivery_id else None
+        if d is not None:
+            d.amount_paid_pesewas, d.payment_reference = payment.amount_pesewas, payment.reference
+            await advance_paid_order(db, d)
     elif payment.purpose == PURPOSE_COURIER:
         if user is not None and user.courier_activated_at is None:
             user.courier_activated_at = now

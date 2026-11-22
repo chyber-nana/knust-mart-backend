@@ -72,3 +72,20 @@ alter table deliveries add column if not exists chosen_size text;
 -- Seller handover confirmation + buyer's directions note
 alter table deliveries add column if not exists seller_released_at timestamptz;
 alter table deliveries add column if not exists dropoff_note text;
+
+-- Escrow payments (also applied automatically at startup)
+alter table deliveries add column if not exists item_amount numeric(10,2);
+alter table deliveries add column if not exists service_fee numeric(8,2);
+alter table deliveries add column if not exists amount_paid_pesewas integer;
+alter table deliveries add column if not exists payment_reference text;
+alter table deliveries add column if not exists paid_at timestamptz;
+alter table deliveries add column if not exists refunded_at timestamptz;
+alter table deliveries add column if not exists seller_paid_at timestamptz;
+alter table payments add column if not exists delivery_id uuid references deliveries(id) on delete set null;
+alter table courier_payouts add column if not exists transfer_reference text;
+alter table users add column if not exists momo_network text;
+alter table users add column if not exists momo_number text;
+alter table users add column if not exists momo_name text;
+alter table users add column if not exists momo_recipient_code text;
+alter table deliveries drop constraint if exists deliveries_status_check;
+alter table deliveries add constraint deliveries_status_check check (status in ('awaiting_seller','awaiting_payment','pending','ready_for_pickup','accepted','in_transit','delivered','failed','disputed','cancelled'));
