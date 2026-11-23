@@ -28,6 +28,11 @@ app.add_middleware(
 async def root():
     return {"message": "Welcome to the KNUST Mart & Student Courier API", "status": "online"}
 
+@app.api_route("/health", methods=["GET", "HEAD"], include_in_schema=False)
+async def health():
+    # No database call on purpose: keeps Render awake without waking Neon.
+    return {"ok": True}
+
 app.include_router(auth.router)
 app.include_router(admin_users.router)
 app.include_router(admin_stats.router)
