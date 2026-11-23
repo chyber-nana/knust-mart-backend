@@ -120,13 +120,14 @@ async def register(data: RegisterIn, db: AsyncSession = Depends(get_db)):
         # (a typo'd or abandoned attempt must not lock the real owner out); a code is still required.
         existing.full_name, existing.password_hash = data.full_name, pwd.hash(data.password)
         existing.user_type = data.account_type
+        existing.phone_number = data.phone_number
         existing.terms_accepted_at, existing.terms_version = datetime.now(timezone.utc), TERMS_VERSION
         await db.commit()
         await (issue_otp if data.account_type == "student" else issue_email_link)(db, email)
         return {"detail": "Verification instructions sent."}
     await db.execute(text("SELECT pg_advisory_xact_lock(70631742)"))
     user = User(full_name=data.full_name, email=email, password_hash=pwd.hash(data.password),
-                user_type=data.account_type, hostel_or_business_address=data.hostel_or_business_address,
+                user_type=data.account_type, phone_number=data.phone_number, hostel_or_business_address=data.hostel_or_business_address,
                 terms_accepted_at=datetime.now(timezone.utc), terms_version=TERMS_VERSION)
     db.add(user)
     await db.flush()

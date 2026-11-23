@@ -1,6 +1,7 @@
 import os, uuid, asyncio
 import re
 import boto3
+from botocore.config import Config
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from ..models import User
 from ..security import current_user
@@ -16,6 +17,8 @@ s3 = boto3.client(
     aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"],
     aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"],
     region_name="auto",
+    # Fail fast instead of hanging for minutes when storage is slow; the app retries once.
+    config=Config(connect_timeout=5, read_timeout=15, retries={"max_attempts": 2, "mode": "standard"}),
 )
 BUCKET = os.environ["R2_BUCKET"]
 PUBLIC_BASE = os.environ["R2_PUBLIC_URL"].rstrip("/")

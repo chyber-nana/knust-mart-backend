@@ -19,12 +19,18 @@ class UserRegisterSchema(BaseModel):
     full_name: str = Field(min_length=2)
     account_type: str | None = Field(default=None, pattern="^(student|external)$")
     email: EmailStr
+    phone_number: str = Field(max_length=32, pattern=r"^\+?[0-9][0-9 ()-]{5,30}$")
     password: str = Field(min_length=8, max_length=72)
     confirm_password: str = Field(min_length=8, max_length=72)
     terms_accepted: bool
     terms_version: str = Field(min_length=1, max_length=32)
     hostel_or_business_address: str | None = None
     store_name: str | None = None
+
+    @field_validator("phone_number", mode="before")
+    @classmethod
+    def clean_phone(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
 
     @field_validator("password", "confirm_password")
     @classmethod
