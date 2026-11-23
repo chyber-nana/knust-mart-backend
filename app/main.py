@@ -7,7 +7,7 @@ load_dotenv()
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from . import realtime  # noqa: F401  registers live notification/message publishing
-from .routers import push as push_router, admin_stats, admin_users, ads, appeals, auth, deliveries, messages, notifications, payments, products, reviews, stores, uploads, vendors
+from .routers import push as push_router, admin_stats, admin_users, ads, appeals, auth, deliveries, messages, notifications, payments, products, reviews, stores, uploads, vendors, friends
 
 # Add this right at the very bottom of your main.py file:
 app = FastAPI(title="KNUST Mart API")
@@ -48,6 +48,7 @@ app.include_router(uploads.router)
 app.include_router(ads.router)
 app.include_router(stores.router)
 app.include_router(payments.router)
+app.include_router(friends.router)
 
 @app.on_event("startup")
 async def _ensure_schema() -> None:
@@ -92,6 +93,15 @@ async def _ensure_escrow_support(engine) -> None:
         "alter table users add column if not exists momo_name text",
         "alter table users add column if not exists momo_recipient_code text",
         "alter table users add column if not exists username varchar(20)",
+        """create table if not exists friendships (
+            id serial primary key,
+            requester_id uuid not null references users(id) on delete cascade,
+            addressee_id uuid not null references users(id) on delete cascade,
+            status text not null default 'pending' check (status in ('pending','accepted','blocked')),
+            created_at timestamptz not null default now(),
+            responded_at timestamptz,
+            check (requester_id <> addressee_id))""",
+        "create unique index if not exists friendships_pair_key on friendships (least(requester_id::text, addressee_id::text), greatest(requester_id::text, addressee_id::text))",
         "create unique index if not exists users_username_lower_key on users (lower(username))",
         "alter table deliveries drop constraint if exists deliveries_status_check",
         "alter table deliveries add constraint deliveries_status_check check (status in ('awaiting_seller','awaiting_payment','pending','ready_for_pickup','accepted','in_transit','delivered','failed','disputed','cancelled'))",
