@@ -119,7 +119,7 @@ async def detail(product_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
 async def create(data: ProductIn, user: User = Depends(get_verified_user), db: AsyncSession = Depends(get_db)):
     if user.store_suspended_at is not None:
         raise HTTPException(403, "This business is currently suspended.")
-    if user.user_type == "external" and user.store_activated_at is None:
+    if user.store_activated_at is None:
         raise HTTPException(403, "Create your business to start selling.")
     if data.category not in CATEGORIES:
         raise HTTPException(422, "Choose a listed category.")
