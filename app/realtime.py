@@ -7,7 +7,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import event
 from sqlalchemy.orm import Session
 
-from .models import ChatMessage, Notification
+from .models import ChatMessage, DirectMessage, Notification
 from . import push
 
 
@@ -76,6 +76,10 @@ def message_payload(message: ChatMessage) -> dict:
         },
     }
 
+def dm_payload(m: DirectMessage) -> dict:
+    return {"type": "dm", "message": {
+        "id": m.id, "sender_id": str(m.sender_id), "receiver_id": str(m.receiver_id), "kind": m.kind,
+        "body": m.body, "created_at": _iso(m.created_at), "expires_at": _iso(m.expires_at)}}
 
 @event.listens_for(Session, "after_flush")
 def _collect_realtime(session: Session, _ctx) -> None:
@@ -88,6 +92,11 @@ def _collect_realtime(session: Session, _ctx) -> None:
         elif isinstance(obj, ChatMessage) and obj.id is not None:
             pushes.append((obj.receiver_id, "New message", "You have a new message on KNUST Mart.", "/inbox"))
             payload = message_payload(obj)
+            events.append((f"user:{obj.receiver_id}", payload))
+            events.append((f"user:{obj.sender_id}", payload))
+        elif isinstance(obj, DirectMessage) and obj.id is not None:
+            pushes.append((obj.receiver_id, "New message", "A friend sent you a message on KNUST Mart.", "/inbox?tab=friends"))
+            payload = dm_payload(obj)
             events.append((f"user:{obj.receiver_id}", payload))
             events.append((f"user:{obj.sender_id}", payload))
 

@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from ..db import get_db
-from ..models import ChatMessage, Delivery, Product, User
+from ..models import ChatMessage, Delivery, Product, User, DirectMessage
 from ..notifications import add_notification
 from ..security import current_user
 
@@ -43,7 +43,10 @@ async def unread_count(
             ChatMessage.read_at.is_(None),
         )
     )).scalar_one()
-    return {"count": count}
+    dm = await db.scalar(select(func.count(DirectMessage.id)).where(
+        DirectMessage.receiver_id == user.id, DirectMessage.read_at.is_(None),
+        or_(DirectMessage.expires_at.is_(None), DirectMessage.expires_at > func.now())))
+    return {"count": count + (dm or 0)}
 
 
 @router.get("/threads")

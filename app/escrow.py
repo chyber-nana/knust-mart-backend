@@ -208,6 +208,11 @@ async def sweeper() -> None:
     while True:
         try:
             async with Session() as db:
+                from sqlalchemy import delete, func
+                from .models import DirectMessage
+                await db.execute(delete(DirectMessage).where(
+                    DirectMessage.expires_at.is_not(None), DirectMessage.expires_at < func.now()))
+                await db.commit()
                 hours = int(_num("AUTO_RELEASE_HOURS", "72"))
                 cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
                 stale = (await db.execute(select(Delivery).where(
