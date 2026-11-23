@@ -358,19 +358,22 @@ async def reset_password(data: ResetPasswordIn, request: Request, db: AsyncSessi
     return {"detail": "Password updated. You can sign in now."}
 
 
-USERNAME_RE = re.compile(r"^[a-z][a-z0-9_]{2,19}$")
+
 RESERVED = {"admin", "support", "help", "knust", "knustmart", "mart", "staff",
             "official", "system", "moderator", "courier", "null", "undefined"}
 
 
+USERNAME_RE = re.compile(r"^[a-z][a-z0-9_]*(\.[a-z0-9_]+)*$")
+
+
 def clean_username(raw: str) -> str:
     name = raw.strip().lstrip("@").lower()
-    if not USERNAME_RE.match(name):
-        raise HTTPException(422, "Use 3-20 letters, numbers or underscores, starting with a letter.")
+    if not 3 <= len(name) <= 20 or not USERNAME_RE.match(name):
+        raise HTTPException(
+            422, "Use 3-20 lowercase letters, numbers, underscores or dots. Start with a letter, and no double or trailing dots.")
     if name in RESERVED:
         raise HTTPException(422, "That username is reserved.")
     return name
-
 
 class UsernameIn(BaseModel):
     username: str
