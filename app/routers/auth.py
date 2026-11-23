@@ -8,6 +8,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, EmailStr, Field, field_validator
 from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
+import re
+from sqlalchemy.exc import IntegrityError
 from ..db import get_db
 from ..mailer import send_email
 from ..models import EmailVerification, PasswordReset, User, UserBadge
@@ -285,7 +287,7 @@ async def login(data: LoginIn, request: Request, db: AsyncSession = Depends(get_
 async def me(user: User = Depends(current_user)):
     return {"id": str(user.id), "full_name": user.full_name, "user_type": user.user_type,
             "is_courier": user.is_courier, "courier_activated": user.courier_activated_at is not None, "is_verified_student": user.is_verified_student,
-            "is_admin": user.is_admin, "store_active": user.store_live,
+            "is_admin": user.is_admin, "store_active": user.store_live,"username": user.username,
             "store_name": user.store_name, "phone_number": user.phone_number,
             "whatsapp_number": user.whatsapp_number,
             "hostel_or_business_address": user.hostel_or_business_address}
@@ -354,3 +356,50 @@ async def reset_password(data: ResetPasswordIn, request: Request, db: AsyncSessi
     await db.delete(rec)
     await db.commit()
     return {"detail": "Password updated. You can sign in now."}
+
+
+USERNAME_RE = re.compile(r"^[a-z][a-z0-9_]{2,19}$")
+RESERVED = {"admin", "support", "help", "knust", "knustmart", "mart", "staff",
+            "official", "system", "moderator", "courier", "null", "undefined"}
+
+
+def clean_username(raw: str) -> str:
+    name = raw.strip().lstrip("@").lower()
+    if not USERNAME_RE.match(name):
+        raise HTTPException(422, "Use 3-20 letters, numbers or underscores, starting with a letter.")
+    if name in RESERVED:
+        raise HTTPException(422, "That username is reserved.")
+    return name
+
+
+class UsernameIn(BaseModel):
+    username: str
+
+
+@router.get("/username-available")
+async def username_available(name: str = Query(..., max_length=40),
+                             user: User = Depends(current_user),
+                             db: AsyncSession = Depends(get_db)):
+    try:
+        n = clean_username(name)
+    except HTTPException as e:
+        return {"available": False, "reason": e.detail}
+    taken = await db.scalar(select(User.id).where(func.lower(User.username) == n, User.id != user.id))
+    return {"available": taken is None, "reason": None if taken is None else "Already taken."}
+
+
+@router.post("/username")
+async def set_username(data: UsernameIn, user: User = Depends(current_user),
+                       db: AsyncSession = Depends(get_db)):
+    if user.username:
+        raise HTTPException(409, "Username already set.")
+    name = clean_username(data.username)
+    if await db.scalar(select(User.id).where(func.lower(User.username) == name)):
+        raise HTTPException(409, "Already taken.")
+    user.username = name
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(409, "Already taken.")
+    return {"username": name}

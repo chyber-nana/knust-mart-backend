@@ -26,6 +26,7 @@ class User(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     full_name: Mapped[str] = mapped_column(Text, nullable=False)
     email: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    username: Mapped[str | None] = mapped_column(String(20), nullable=True)
     password_hash: Mapped[str] = mapped_column(Text, nullable=False)
     user_type: Mapped[str] = mapped_column(Text, default="external", nullable=False)
     is_verified_student: Mapped[bool] = mapped_column(default=False, server_default="false", nullable=False)

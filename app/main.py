@@ -91,6 +91,8 @@ async def _ensure_escrow_support(engine) -> None:
         "alter table users add column if not exists momo_number text",
         "alter table users add column if not exists momo_name text",
         "alter table users add column if not exists momo_recipient_code text",
+        "alter table users add column if not exists username varchar(20)",
+        "create unique index if not exists users_username_lower_key on users (lower(username))",
         "alter table deliveries drop constraint if exists deliveries_status_check",
         "alter table deliveries add constraint deliveries_status_check check (status in ('awaiting_seller','awaiting_payment','pending','ready_for_pickup','accepted','in_transit','delivered','failed','disputed','cancelled'))",
     ]
