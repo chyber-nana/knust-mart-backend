@@ -18,7 +18,7 @@ from ..catalog import (
 )
 from ..db import get_db
 from ..mailer import send_email
-from ..models import CourierPayout, Delivery, DeliveryOffer, Payment, Product, Review, User
+from ..models import CourierPayout, Delivery, DeliveryOffer, Payment, Product, Review, User, DirectMessage
 from ..stock import complete_unit, release_unit, take_unit
 from ..switches import courier_allowed, escrow_allowed
 from ..escrow import PURPOSE_ORDER, quote, release_to_seller, safe_refund
@@ -34,6 +34,7 @@ class DeliveryIn(BaseModel):
     product_id: uuid.UUID
     pickup_location: str | None = None
     dropoff_location: str | None = None
+    hint_id: int | None = None
     fulfillment_type: Literal["courier", "pickup"] = "courier"
     delivery_fee: Decimal | None = None
     choose_courier: bool = False
@@ -204,6 +205,12 @@ async def request_delivery(data: DeliveryIn, user: User = Depends(current_user),
         if not allowed and value:
             raise HTTPException(422, f"This item has no {label} options.")
     picked = " (" + " · ".join(x for x in (color, size) if x) + ")" if (color or size) else ""
+    hint = None
+    if data.hint_id is not None:
+        hint = await db.get(DirectMessage, data.hint_id)
+        if (hint is None or hint.kind != "hint" or hint.receiver_id != user.id
+                or hint.product_id != product.id or hint.hint_status != "pending"):
+            raise HTTPException(409, "This Hint is no longer available.")    
     take_unit(product)
     d = Delivery(
         dropoff_note=(data.dropoff_note or "").strip() or None if data.fulfillment_type == "courier" else None,
@@ -217,11 +224,17 @@ async def request_delivery(data: DeliveryIn, user: User = Depends(current_user),
         delivery_fee=Decimal(str(DELIVERY_FEE)) if data.fulfillment_type == "courier" else Decimal("0.00"),
         choose_courier=False,  # fixed delivery fee: the buyer pays before a courier is chosen
         delivery_qr_token=secrets.token_urlsafe(32),
+        hint_id=hint.id if hint else None,
         pin_code=f"{secrets.randbelow(10**6):06d}",
         status="awaiting_seller",
     )
     db.add(d)
     await db.flush()
+    if hint:
+        hint.hint_status = "bought"
+        add_notification(db, hint.sender_id, "hint_bought", "Your Hint was picked up",
+                         f"@{user.username or user.full_name} is buying {product.title} for you.",
+                         "/inbox?tab=friends")    
     add_notification(
         db, user.id, "order_requested", "Order requested",
         f"Your delivery request for {product.title} was placed.",

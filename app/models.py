@@ -257,6 +257,7 @@ class Delivery(Base):
     status: Mapped[str] = mapped_column(Text, default="pending", server_default="'pending'", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    hint_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("direct_messages.id", ondelete="SET NULL"), nullable=True)
 
 
 class DeliveryOffer(Base):

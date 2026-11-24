@@ -117,6 +117,7 @@ async def _ensure_escrow_support(engine) -> None:
         "create index if not exists ix_dm_pair on direct_messages (sender_id, receiver_id, created_at)",
         "create index if not exists ix_dm_receiver_unread on direct_messages (receiver_id, read_at)",
         "create index if not exists ix_dm_expires on direct_messages (expires_at) where expires_at is not null",
+        "alter table deliveries add column if not exists hint_id bigint references direct_messages(id) on delete set null",
         "create unique index if not exists friendships_pair_key on friendships (least(requester_id::text, addressee_id::text), greatest(requester_id::text, addressee_id::text))",
         "create unique index if not exists users_username_lower_key on users (lower(username))",
         "alter table deliveries drop constraint if exists deliveries_status_check",
