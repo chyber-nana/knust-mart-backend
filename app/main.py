@@ -49,6 +49,7 @@ app.include_router(ads.router)
 app.include_router(stores.router)
 app.include_router(payments.router)
 app.include_router(friends.router)
+app.include_router(dm.router)
 
 @app.on_event("startup")
 async def _ensure_schema() -> None:
