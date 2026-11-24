@@ -7,7 +7,7 @@ load_dotenv()
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from . import realtime  # noqa: F401  registers live notification/message publishing
-from .routers import push as push_router, admin_stats, admin_users, ads, appeals, auth, deliveries, messages, notifications, payments, products, reviews, stores, uploads, vendors, friends
+from .routers import push as push_router, admin_stats, admin_users, ads, appeals, auth, deliveries, messages, notifications, payments, products, reviews, stores, uploads, vendors, friends, dm
 
 # Add this right at the very bottom of your main.py file:
 app = FastAPI(title="KNUST Mart API")
