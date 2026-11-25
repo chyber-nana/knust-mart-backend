@@ -111,19 +111,42 @@ def valid_momo(number: str) -> str:
 
 
 async def verify_and_save_momo(user: User, network: str, number: str) -> dict:
+    """Resolve the submitted number, create a Paystack transfer recipient, then persist
+    only the details returned/confirmed by Paystack. Never mark a number active without
+    a real recipient_code.
+    """
     code = MOMO_CODES.get(network)
     if code is None:
         raise HTTPException(422, "Choose MTN, Vodafone or AirtelTigo.")
     number = valid_momo(number)
     info = await _paystack("GET", f"/bank/resolve?account_number={number}&bank_code={code}")
-    name = info.get("account_name")
-    if not name:
-        raise HTTPException(422, "We couldn't confirm that MoMo number. Check the network and number.")
+    name = str(info.get("account_name") or "").strip()
+    resolved_number = valid_momo(str(info.get("account_number") or number))
+    if not name or resolved_number != number:
+        raise HTTPException(422, "Paystack could not verify the submitted MoMo number. Check the network and number.")
     rec = await _paystack("POST", "/transferrecipient", json={
-        "type": "mobile_money", "name": name, "account_number": number, "bank_code": code, "currency": CURRENCY})
-    user.momo_network, user.momo_number, user.momo_name = network, number, name
-    user.momo_recipient_code = rec.get("recipient_code")
-    return {"momo_network": network, "momo_number": number, "momo_name": name}
+        "type": "mobile_money", "name": name, "account_number": resolved_number,
+        "bank_code": code, "currency": CURRENCY})
+    recipient_code = str(rec.get("recipient_code") or "").strip()
+    recipient = rec.get("details") if isinstance(rec.get("details"), dict) else {}
+    returned_number = recipient.get("account_number") or resolved_number
+    returned_name = recipient.get("account_name") or name
+    if not recipient_code or valid_momo(str(returned_number)) != resolved_number:
+        raise HTTPException(502, "Paystack did not return a valid transfer recipient. Your payout account was not saved.")
+    previous_recipient = user.momo_recipient_code
+    user.momo_network = network
+    user.momo_number = resolved_number
+    user.momo_name = str(returned_name).strip()
+    user.momo_recipient_code = recipient_code
+    if previous_recipient and previous_recipient != recipient_code:
+        # The new verified recipient is now authoritative. Retire the old Paystack
+        # beneficiary so it cannot be selected accidentally in the dashboard.
+        try:
+            await _paystack("DELETE", f"/transferrecipient/{previous_recipient}")
+        except HTTPException:
+            pass  # local payouts already point only to the newly verified recipient
+    return {"momo_network": user.momo_network, "momo_number": user.momo_number,
+            "momo_name": user.momo_name, "confirmed": True}
 
 
 async def _transfer(recipient: str, amount_pesewas: int, reference: str, reason: str) -> None:

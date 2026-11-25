@@ -144,9 +144,12 @@ async def _paystack(method: str, path: str, **kwargs) -> dict:
         body = response.json()
     except (httpx.HTTPError, ValueError):
         raise HTTPException(502, "Could not reach the payment provider. Try again.")
-    if response.status_code != 200 or not body.get("status") or not isinstance(body.get("data"), dict):
+    # Paystack endpoints can return 200 or 201 for successful operations.
+    # DELETE transfer-recipient responses may omit `data` entirely.
+    if not response.is_success or not body.get("status"):
         raise HTTPException(502, "The payment provider could not process this request. Try again.")
-    return body["data"]
+    payload = body.get("data")
+    return payload if isinstance(payload, dict) else {}
 
 
 async def paystack_initialize(*, email: str, amount: int, reference: str, callback_url: str, metadata: dict) -> dict:
@@ -167,8 +170,8 @@ async def load_payment(db: AsyncSession, reference: str) -> Payment | None:
     )).scalar_one_or_none()
 
 FAILED_PAYSTACK = {"failed", "abandoned", "reversed"}
-_FAILED_LABEL = {PURPOSE_STORE: "business", PURPOSE_COURIER: "courier registration", PURPOSE_PROMOTION: "listing promotion"}
-_RETRY_LINK = {PURPOSE_STORE: "/store/create", PURPOSE_COURIER: "/courier", PURPOSE_PROMOTION: "/"}
+_FAILED_LABEL = {PURPOSE_STORE: "business", PURPOSE_COURIER: "courier registration", PURPOSE_PROMOTION: "listing promotion", "momo_setup": "MoMo payout setup"}
+_RETRY_LINK = {PURPOSE_STORE: "/store/create", PURPOSE_COURIER: "/courier", PURPOSE_PROMOTION: "/", "momo_setup": "/settings"}
 
 
 def apply_store_details(user: User, details: dict) -> None:
@@ -212,8 +215,11 @@ async def apply_successful_charge(db: AsyncSession, payment: Payment, data: dict
         and amount == payment.amount_pesewas
         and str(data.get("currency", "")).upper() == payment.currency
     )
-    pending_store = (payment.provider_payload or {}).get("pending_store")
-    payment.provider_payload = {**data, "pending_store": pending_store} if pending_store else data
+    prior_payload = payment.provider_payload or {}
+    pending_store = prior_payload.get("pending_store")
+    pending_momo = prior_payload.get("pending_momo")
+    payment.provider_payload = {**data, **({"pending_store": pending_store} if pending_store else {}),
+                                **({"pending_momo": pending_momo} if pending_momo else {})}
     if not matches:
         payment.status = "flagged"
         await db.flush()
@@ -231,6 +237,15 @@ async def apply_successful_charge(db: AsyncSession, payment: Payment, data: dict
                 f"Payment received. “{product.title}” now appears at the top of the marketplace.",
                 f"/products/{product.id}",
             )
+    elif payment.purpose == "momo_setup":
+        if user is None or not pending_momo:
+            payment.status = "flagged"
+            await db.flush()
+            return False
+        from .escrow import verify_and_save_momo
+        await verify_and_save_momo(user, pending_momo["network"], pending_momo["number"])
+        add_notification(db, user.id, "momo_setup_complete", "Payout MoMo is ready",
+                         f"Your payout number {user.momo_number} is verified and registered for seller payouts.", "/settings")
     elif payment.purpose == "order_payment":
         from .escrow import advance_paid_order
         from .models import Delivery

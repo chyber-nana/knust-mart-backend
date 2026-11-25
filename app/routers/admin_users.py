@@ -312,6 +312,10 @@ async def anonymize_user(
     user.hostel_or_business_address = None
     user.phone_number = None
     user.whatsapp_number = None
+    user.momo_network = None
+    user.momo_number = None
+    user.momo_name = None
+    user.momo_recipient_code = None
     user.store_name = None
     user.store_bio = None
     user.logo_url = None

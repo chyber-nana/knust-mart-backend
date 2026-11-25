@@ -262,7 +262,8 @@ async def request_delivery(data: DeliveryIn, user: User = Depends(current_user),
                 "/courier",
             )
     await db.commit()
-    return {"id": str(d.id), "status": d.status, "delivery_fee": str(d.delivery_fee)}
+    payment_mode = "in_app" if (escrow_allowed(seller) and bool(seller.momo_recipient_code)) else "in_person"
+    return {"id": str(d.id), "status": d.status, "delivery_fee": str(d.delivery_fee), "payment_mode": payment_mode}
 
 
 @router.post("/{delivery_id}/cancel")
@@ -351,8 +352,9 @@ async def seller_response(
         await db.commit()
         return {"status": d.status}
 
-    buyer = await db.get(User, d.buyer_id)
-    if not (buyer and escrow_allowed(buyer)):
+    # Payment mode belongs to the SELLER's payout capability, not the buyer's account.
+    # A seller without a real Paystack transfer recipient uses in-person handover/payment.
+    if not (escrow_allowed(user) and user.momo_recipient_code):
         # Escrow is off: the original flow. The buyer pays the seller in person at handover.
         if d.fulfillment_type == "pickup":
             d.status = "ready_for_pickup"
@@ -388,9 +390,6 @@ async def seller_response(
             "status": d.status,
             "courier_available_at": d.courier_available_at.isoformat() if d.courier_available_at else None,
         }
-    if not user.momo_recipient_code:
-        await db.rollback()
-        raise HTTPException(409, "Add and confirm your MoMo number in Settings before you accept orders, so we can pay you.")
     q = quote(product.price, d.delivery_fee, d.fulfillment_type == "courier")
     d.item_amount, d.service_fee = product.price, q["service_fee"]
     d.status = "awaiting_payment"

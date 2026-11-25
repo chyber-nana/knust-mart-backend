@@ -9,10 +9,11 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..billing import apply_successful_charge, load_payment, paystack_secret, paystack_verify, valid_signature, mark_failed, FAILED_PAYSTACK
+from ..billing import apply_successful_charge, load_payment, paystack_secret, paystack_verify, valid_signature, mark_failed, FAILED_PAYSTACK, new_reference, paystack_initialize, CURRENCY
 from ..db import get_db
 from ..escrow import pay_courier_batch, refund_order, release_to_seller, send_announcement, verify_and_save_momo
-from ..models import CourierPayout, Delivery, User
+from ..billing import _paystack
+from ..models import CourierPayout, Delivery, Payment, User
 from ..security import admin_user, current_user
 
 router = APIRouter(prefix="/payments", tags=["payments"])
@@ -64,7 +65,8 @@ async def verify_payment(reference: str, user: User = Depends(current_user), db:
             mark_failed(db, payment)
         await db.commit()
     return {"status": payment.status, "store_active": user.store_live, "courier_active": user.is_courier,
-            "purpose": payment.purpose, "delivery_id": str(payment.delivery_id) if payment.delivery_id else None}
+            "momo_confirmed": bool(user.momo_recipient_code), "purpose": payment.purpose,
+            "delivery_id": str(payment.delivery_id) if payment.delivery_id else None}
 
 
 class MomoIn(BaseModel):
@@ -78,12 +80,48 @@ async def get_momo(user: User = Depends(current_user)):
             "confirmed": bool(user.momo_recipient_code)}
 
 
-@router.put("/momo")
-async def save_momo(data: MomoIn, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
-    """Name-checks the MoMo number with Paystack and stores it for payouts. The user sees the registered name back."""
-    result = await verify_and_save_momo(user, data.network, data.number)
+@router.post("/momo/setup")
+async def start_momo_setup(data: MomoIn, request: Request, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
+    """Seller pays GH₵10 before KNUST Mart creates or replaces their Paystack payout recipient.
+    Admins can use the same endpoint for controlled test setup without the fee.
+    """
+    from ..escrow import valid_momo
+    number = valid_momo(data.number)
+    frontend_url = __import__("os").environ.get("FRONTEND_URL")
+    if not frontend_url:
+        raise HTTPException(503, "Payments are not available right now.")
+    if user.is_admin:
+        result = await verify_and_save_momo(user, data.network, number)
+        await db.commit()
+        return {**result, "admin_test_setup": True}
+    reference = new_reference()
+    amount = 1000  # GH₵10.00 in pesewas
+    checkout = await paystack_initialize(email=user.email, amount=amount, reference=reference,
+        callback_url=f"{frontend_url.rstrip('/')}/store/activated?reference={reference}&purpose=momo_setup",
+        metadata={"user_id": str(user.id), "purpose": "momo_setup"})
+    db.add(Payment(user_id=user.id, purpose="momo_setup", reference=reference,
+        amount_pesewas=amount, currency=CURRENCY, status="pending",
+        provider_payload={"pending_momo": {"network": data.network, "number": number}}))
     await db.commit()
-    return {**result, "confirmed": True}
+    return {"authorization_url": checkout["authorization_url"], "reference": reference, "amount": 10}
+
+
+@router.put("/momo")
+async def save_momo(data: MomoIn, user: User = Depends(current_user)):
+    raise HTTPException(405, "Use the GH₵10 MoMo setup checkout. Existing payout accounts cannot be removed or overwritten here.")
+
+
+@router.delete("/momo/admin-test")
+async def delete_admin_test_momo(user: User = Depends(admin_user), db: AsyncSession = Depends(get_db)):
+    """Admin-only cleanup for the administrator's own test recipient details."""
+    if user.momo_recipient_code:
+        await _paystack("DELETE", f"/transferrecipient/{user.momo_recipient_code}")
+    user.momo_network = None
+    user.momo_number = None
+    user.momo_name = None
+    user.momo_recipient_code = None
+    await db.commit()
+    return {"status": "deleted"}
 
 
 @router.get("/admin/held")
