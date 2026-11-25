@@ -213,6 +213,15 @@ async def sweeper() -> None:
                 await db.execute(delete(DirectMessage).where(
                     DirectMessage.expires_at.is_not(None), DirectMessage.expires_at < func.now()))
                 await db.commit()
+                from .models import Payment
+                from .billing import PURPOSE_COURIER, PURPOSE_PROMOTION, PURPOSE_STORE, mark_failed
+                stale_pay = (await db.execute(select(Payment).where(
+                    Payment.status == "pending",
+                    Payment.purpose.in_((PURPOSE_STORE, PURPOSE_COURIER, PURPOSE_PROMOTION)),
+                    Payment.created_at < datetime.now(timezone.utc) - timedelta(hours=1)))).scalars().all()
+                for pay in stale_pay:
+                    mark_failed(db, pay)
+                await db.commit()                
                 hours = int(_num("AUTO_RELEASE_HOURS", "72"))
                 cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
                 stale = (await db.execute(select(Delivery).where(

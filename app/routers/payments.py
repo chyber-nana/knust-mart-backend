@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..billing import apply_successful_charge, load_payment, paystack_secret, paystack_verify, valid_signature
+from ..billing import apply_successful_charge, load_payment, paystack_secret, paystack_verify, valid_signature, mark_failed, FAILED_PAYSTACK
 from ..db import get_db
 from ..escrow import pay_courier_batch, refund_order, release_to_seller, send_announcement, verify_and_save_momo
 from ..models import CourierPayout, Delivery, User
@@ -60,6 +60,8 @@ async def verify_payment(reference: str, user: User = Depends(current_user), db:
         data = await paystack_verify(reference)
         if data.get("status") == "success":
             await apply_successful_charge(db, payment, data)
+        elif data.get("status") in FAILED_PAYSTACK:
+            mark_failed(db, payment)
         await db.commit()
     return {"status": payment.status, "store_active": user.store_live, "courier_active": user.is_courier,
             "purpose": payment.purpose, "delivery_id": str(payment.delivery_id) if payment.delivery_id else None}

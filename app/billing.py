@@ -166,6 +166,33 @@ async def load_payment(db: AsyncSession, reference: str) -> Payment | None:
         select(Payment).where(Payment.reference == reference).with_for_update()
     )).scalar_one_or_none()
 
+FAILED_PAYSTACK = {"failed", "abandoned", "reversed"}
+_FAILED_LABEL = {PURPOSE_STORE: "business", PURPOSE_COURIER: "courier registration", PURPOSE_PROMOTION: "listing promotion"}
+_RETRY_LINK = {PURPOSE_STORE: "/store/create", PURPOSE_COURIER: "/courier", PURPOSE_PROMOTION: "/"}
+
+
+def apply_store_details(user: User, details: dict) -> None:
+    """Business details are only copied onto the account once the business is actually created."""
+    user.store_name = details["store_name"]
+    user.phone_number = details["phone_number"]
+    user.business_terms_accepted_at = datetime.now(timezone.utc)
+    user.business_terms_version = details["business_terms_version"]
+    if "hostel_or_business_address" in details:
+        user.hostel_or_business_address = details["hostel_or_business_address"]
+
+
+def mark_failed(db: AsyncSession, payment: Payment) -> None:
+    """A payment that was cancelled, abandoned or never finished. A late webhook can still settle it."""
+    if payment.status != "pending":
+        return
+    payment.status = "failed"
+    label = _FAILED_LABEL.get(payment.purpose)
+    if label:
+        add_notification(
+            db, payment.user_id, "payment_failed", f"Your {label} payment wasn't completed",
+            "Nothing was set up. If you were charged, it will switch on automatically once the payment is confirmed. Otherwise you can try again any time.",
+            _RETRY_LINK[payment.purpose],
+        )
 
 async def apply_successful_charge(db: AsyncSession, payment: Payment, data: dict) -> bool:
     """Idempotently settle a payment from a Paystack transaction object.
@@ -185,7 +212,8 @@ async def apply_successful_charge(db: AsyncSession, payment: Payment, data: dict
         and amount == payment.amount_pesewas
         and str(data.get("currency", "")).upper() == payment.currency
     )
-    payment.provider_payload = data
+    pending_store = (payment.provider_payload or {}).get("pending_store")
+    payment.provider_payload = {**data, "pending_store": pending_store} if pending_store else data
     if not matches:
         payment.status = "flagged"
         await db.flush()
@@ -221,6 +249,9 @@ async def apply_successful_charge(db: AsyncSession, payment: Payment, data: dict
                 "Payment received. Courier mode is on. You can now accept delivery jobs.", "/courier",
             )
     elif user is not None and user.store_activated_at is None:
+        if pending_store:
+            apply_store_details(user, pending_store)
+        user.store_activated_at = now
         user.store_activated_at = now
         user.store_activation_type = "paid"
         add_notification(
