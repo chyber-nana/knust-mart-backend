@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..db import get_db
 from ..models import Friendship, User
 from ..notifications import add_notification
-from ..security import current_user
+from ..security import current_user, require_student
 
 router = APIRouter(prefix="/friends", tags=["friends"])
 MAX_PENDING_OUT = 30
@@ -54,12 +54,14 @@ async def my_friends(user: User = Depends(current_user), db: AsyncSession = Depe
 @router.get("/search")
 async def search(q: str = Query(..., min_length=2, max_length=21),
                  user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
+    require_student(user)
     needle = re.sub(r"[^a-z0-9_.]", "", q.lower()).replace("_", "\\_")
     if len(needle) < 2:
         return []
     users = (await db.execute(
         select(User).where(func.lower(User.username).like(needle + "%", escape="\\"),
-                           User.id != user.id, User.restriction.is_(None))
+                           User.id != user.id, User.restriction.is_(None),
+                           User.user_type == "student")
         .order_by(User.username).limit(8))).scalars().all()
     hits = []
     for u in users:
@@ -75,10 +77,12 @@ async def search(q: str = Query(..., min_length=2, max_length=21),
 
 @router.post("/request", status_code=201)
 async def send_request(data: RequestIn, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
+    require_student(user)
     if not user.username:
         raise HTTPException(409, "Set a username first.")
     name = data.username.strip().lstrip("@").lower()
-    target = await db.scalar(select(User).where(func.lower(User.username) == name, User.restriction.is_(None)))
+    target = await db.scalar(select(User).where(
+        func.lower(User.username) == name, User.restriction.is_(None), User.user_type == "student"))
     if target is None or target.id == user.id:
         raise HTTPException(404, "No user with that username.")
     f = await pair(db, user.id, target.id)

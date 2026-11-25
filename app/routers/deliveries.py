@@ -24,7 +24,7 @@ from ..switches import courier_allowed, escrow_allowed
 from ..escrow import PURPOSE_ORDER, quote, release_to_seller, safe_refund
 from ..billing import CURRENCY as PAY_CURRENCY
 from ..notifications import add_notification
-from ..security import current_user
+from ..security import current_user, require_student
 from ..catalog import clean_location
 
 router = APIRouter(prefix="/deliveries", tags=["deliveries"])
@@ -166,6 +166,7 @@ async def activate_courier(user: User = Depends(current_user), db: AsyncSession 
 
 @router.post("", status_code=201)
 async def request_delivery(data: DeliveryIn, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
+    require_student(user)
     if data.fulfillment_type == "courier" and not courier_allowed(user):
         raise HTTPException(403, "Courier delivery isn't available yet. Please choose Pickup.")
     if data.fulfillment_type == "courier":

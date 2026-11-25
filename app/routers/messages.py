@@ -10,7 +10,7 @@ from sqlalchemy.orm import aliased
 from ..db import get_db
 from ..models import ChatMessage, Delivery, Product, User, DirectMessage
 from ..notifications import add_notification
-from ..security import current_user
+from ..security import current_user, require_student
 
 router = APIRouter(prefix="/messages", tags=["messages"])
 
@@ -174,6 +174,7 @@ async def send_message(
     if product is None or receiver is None or data.receiver_id == user.id:
         raise HTTPException(404, "Conversation not found.")
     if user.id != product.seller_id:
+        require_student(user)
         if data.receiver_id != product.seller_id:
             raise HTTPException(403, "Messages about this listing must go to its seller.")
     else:

@@ -153,3 +153,8 @@ async def admin_user(user: User = Depends(current_user)) -> User:
     if not user.is_admin:
         raise HTTPException(status_code=403, detail="Admin access required.")
     return user
+
+
+def require_student(user: User) -> None:
+    if user.user_type != "student":
+        raise HTTPException(403, "Non-student accounts can sell on KNUST Mart but can't buy.")

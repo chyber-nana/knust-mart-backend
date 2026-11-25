@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import get_db
 from ..models import DirectMessage, Friendship, Product, ProductImage, User
-from ..security import current_user
+from ..security import current_user, require_student
 
 router = APIRouter(prefix="/dm", tags=["direct messages"])
 TTL = timedelta(hours=24)
@@ -135,6 +135,7 @@ class HintIn(BaseModel):
 
 @router.post("/hints", status_code=201)
 async def send_hint(data: HintIn, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
+    require_student(user)
     await require_friend(db, user, data.friend_id)
     product = await db.get(Product, data.product_id)
     if product is None or product.status != "active":

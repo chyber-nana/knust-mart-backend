@@ -234,7 +234,7 @@ async def set_listing_status(
         select(Delivery.id)
         .where(
             Delivery.product_id == product.id,
-            Delivery.status.in_(("awaiting_seller", "pending", "ready_for_pickup", "accepted", "in_transit")),
+            Delivery.status.in_(("awaiting_seller", "awaiting_payment", "pending", "ready_for_pickup", "accepted", "in_transit")),
         )
         .limit(1)
     )
@@ -245,3 +245,57 @@ async def set_listing_status(
     product.status = data.status
     await db.commit()
     return {"status": product.status}
+
+
+@router.post("/{product_id}/promote")
+async def promote_listing(
+    product_id: uuid.UUID,
+    user: User = Depends(get_verified_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """One-time fee that floats the listing to the top of the marketplace."""
+    product = await owned_product(product_id, user, db)
+    if product.is_promoted:
+        return {"status": "promoted"}
+    if product.status != "active":
+        raise HTTPException(409, "Only an active listing can be promoted.")
+    amount = promotion_fee_pesewas()
+    if amount <= 0:
+        product.is_promoted = True
+        await db.commit()
+        return {"status": "promoted"}
+    frontend_url = os.environ.get("FRONTEND_URL")
+    if not frontend_url:
+        raise HTTPException(503, "Payments are not available right now.")
+    reference = new_reference()
+    checkout = await paystack_initialize(
+        email=user.email, amount=amount, reference=reference,
+        callback_url=f"{frontend_url.rstrip('/')}/store/activated?reference={reference}&purpose=promotion",
+        metadata={"user_id": str(user.id), "purpose": PURPOSE_PROMOTION, "product_id": str(product.id)},
+    )
+    db.add(Payment(user_id=user.id, purpose=PURPOSE_PROMOTION, product_id=product.id, reference=reference,
+                   amount_pesewas=amount, currency=CURRENCY, status="pending"))
+    await db.commit()
+    return {"status": "payment_required", "authorization_url": checkout["authorization_url"],
+            "reference": reference, "amount": amount / 100, "currency": CURRENCY}
+
+
+@router.delete("/{product_id}")
+async def delete_listing(
+    product_id: uuid.UUID,
+    user: User = Depends(get_verified_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Listings with delivery, chat or review history stay for the record: mark them sold instead."""
+    product = await owned_product(product_id, user, db)
+    has_delivery = await db.scalar(select(Delivery.id).where(Delivery.product_id == product.id).limit(1))
+    has_chat = await db.scalar(select(ChatMessage.id).where(ChatMessage.product_id == product.id).limit(1))
+    has_review = await db.scalar(
+        select(Review.id).join(Delivery, Delivery.id == Review.delivery_id)
+        .where(Delivery.product_id == product.id).limit(1)
+    )
+    if has_delivery or has_chat or has_review:
+        raise HTTPException(409, "This listing has delivery, chat or review history, so it can't be deleted. Mark it sold instead.")
+    await db.delete(product)
+    await db.commit()
+    return {"deleted": True}
