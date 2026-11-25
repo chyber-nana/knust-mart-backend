@@ -76,7 +76,7 @@ def _search_filter(term: str):
 @router.get("")
 async def list_users(
     q: str | None = Query(default=None, max_length=120),
-    kind: Literal["all", "users", "businesses"] = Query(default="all"),
+    kind: Literal["all", "users", "businesses", "students", "external", "suspended", "banned"] = Query(default="all"),
     _: User = Depends(admin_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -105,6 +105,14 @@ async def list_users(
         stmt = stmt.where(_search_filter(q.strip()))
     if kind == "businesses":
         stmt = stmt.where(User.store_activated_at.is_not(None))
+    elif kind == "students":
+        stmt = stmt.where(User.user_type == "student")
+    elif kind == "external":
+        stmt = stmt.where(User.user_type == "external")
+    elif kind == "suspended":
+        stmt = stmt.where(User.restriction == "suspended")
+    elif kind == "banned":
+        stmt = stmt.where(User.restriction == "banned")
     users = (await db.scalars(stmt)).all()
     return {
         "stats": {
