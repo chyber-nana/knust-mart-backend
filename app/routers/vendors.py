@@ -181,6 +181,7 @@ async def discover_vendors(
         "rating": float(rating) if rating else None,
         "review_count": review_count,
         "active_listings": active_listings,
+        "payout_verified": bool(user.momo_recipient_code),
     } for user, rating, review_count, active_listings in rows]
 
 
@@ -204,7 +205,7 @@ async def storefront(vendor_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     # Public fields only: never expose the vendor's email.
     return {"id": str(u.id), "name": u.store_name or u.full_name, "user_type": u.user_type, "bio": u.store_bio,
             "address": u.hostel_or_business_address, "phone_number": u.phone_number, "whatsapp_number": u.whatsapp_number,
-            "badges": await public_badges(db, u), "logo_url": u.logo_url, "banner_url": u.banner_url,
+            "badges": await public_badges(db, u), "payout_verified": bool(u.momo_recipient_code), "logo_url": u.logo_url, "banner_url": u.banner_url,
             "logo_position_x": u.logo_position_x, "logo_position_y": u.logo_position_y,
             "banner_position_x": u.banner_position_x,
             "banner_position_y": u.banner_position_y,
