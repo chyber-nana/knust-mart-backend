@@ -20,6 +20,7 @@ class ModerationIn(BaseModel):
     action: Literal["suspend", "ban", "restore"]
     target: Literal["account", "business"]
 
+RESTRICTION = {"suspend": "suspended", "ban": "banned"}
 
 def _iso(value) -> str | None:
     return value.isoformat() if value else None
@@ -234,7 +235,7 @@ async def moderate_user(
             user.restriction = None
         else:
             user.is_banned = True
-            user.restriction = data.action
+            user.restriction = RESTRICTION[data.action]
             if data.action == "ban":
                 user.is_courier = False
                 if user.store_activated_at is not None:
